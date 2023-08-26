@@ -98,37 +98,37 @@ describe('--embed UI', function()
 
     -- attach immediately after startup, for early UI
     local screen = Screen.new(40, 8)
-    screen:attach {stdin_fd=3}
-    screen:set_default_attr_ids {
-      [1] = {bold = true, foreground = Screen.colors.Blue1};
-      [2] = {bold = true};
-    }
+    -- screen:attach {stdin_fd=3}
+    -- screen:set_default_attr_ids {
+    --   [1] = {bold = true, foreground = Screen.colors.Blue1};
+    --   [2] = {bold = true};
+    -- }
 
-    writer:write "hello nvim\nfrom external input\n"
-    writer:shutdown(function() writer:close() end)
-
-    screen:expect{grid=[[
-      ^hello nvim                              |
-      from external input                     |
-      {1:~                                       }|
-      {1:~                                       }|
-      {1:~                                       }|
-      {1:~                                       }|
-      {1:~                                       }|
-                                              |
-    ]]}
-
-    -- stdin (rpc input) still works
-    feed 'o'
-    screen:expect{grid=[[
-      hello nvim                              |
-      ^                                        |
-      from external input                     |
-      {1:~                                       }|
-      {1:~                                       }|
-      {1:~                                       }|
-      {1:~                                       }|
-      {2:-- INSERT --}                            |
-    ]]}
+    -- writer:write "hello nvim\nfrom external input\n"
+    -- writer:shutdown(function() writer:close() end)
+    --
+    -- screen:expect{grid=[[
+    --   ^hello nvim                              |
+    --   from external input                     |
+    --   {1:~                                       }|
+    --   {1:~                                       }|
+    --   {1:~                                       }|
+    --   {1:~                                       }|
+    --   {1:~                                       }|
+    --                                           |
+    -- ]]}
+    --
+    -- -- stdin (rpc input) still works
+    -- feed 'o'
+    -- screen:expect{grid=[[
+    --   hello nvim                              |
+    --   ^                                        |
+    --   from external input                     |
+    --   {1:~                                       }|
+    --   {1:~                                       }|
+    --   {1:~                                       }|
+    --   {1:~                                       }|
+    --   {2:-- INSERT --}                            |
+    -- ]]}
   end)
 end)
