@@ -91,3 +91,8 @@ jobs:
         env:
           TEST_FILE: test/functional/ui/embed_spec.lua
         run: cmake --build build --target functionaltest
+
+      - if: success() || failure() && steps.abort_job.outputs.status == 'success'
+        name: Test full
+        timeout-minutes: 20
+        run: cmake --build build --target functionaltest
