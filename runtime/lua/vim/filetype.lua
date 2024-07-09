@@ -2416,23 +2416,35 @@ local function dispatch(ft, path, bufnr, ...)
   return ft0, on_detect
 end
 
---- Lookup table/cache for patterns that contain an environment variable pattern, e.g. ${SOME_VAR}.
---- @type table<string,boolean>
-local expand_env_lookup = {}
+--- Lookup table/cache for patterns
+--- @alias vim.filetype.pattern_cache { fullpat: string, has_env: boolean, has_slash: boolean }
+--- @type table<string,vim.filetype.pattern_cache>
+local pattern_lookup = {}
+
+--- @param pat string
+--- @return vim.filetype.pattern_cache
+local function parse_pattern(pat)
+  pattern_lookup[pat] = {
+    fullpat = '^' .. pat .. '$',
+    has_env = pat:find('%$%b{}') ~= nil,
+    has_slash = pat:find('/') ~= nil,
+  }
+  return pattern_lookup[pat]
+end
 
 --- @param name string
 --- @param path string
 --- @param tail string
 --- @param pat string
---- @return string|false?
+--- @return string|boolean?
 local function match_pattern(name, path, tail, pat)
-  if expand_env_lookup[pat] == nil then
-    expand_env_lookup[pat] = pat:find('%${') ~= nil
-  end
-  if expand_env_lookup[pat] then
+  local pat_cache = pattern_lookup[pat] or parse_pattern(pat)
+  local fullpat, has_slash = pat_cache.fullpat, pat_cache.has_slash
+
+  if pat_cache.has_env then
     local return_early --- @type true?
     --- @type string
-    pat = pat:gsub('%${(%S-)}', function(env)
+    fullpat = fullpat:gsub('%${(%S-)}', function(env)
       -- If an environment variable is present in the pattern but not set, there is no match
       if not vim.env[env] then
         return_early = true
@@ -2443,12 +2455,10 @@ local function match_pattern(name, path, tail, pat)
     if return_early then
       return false
     end
+    has_slash = fullpat:find('/') ~= nil
   end
 
-  -- If the pattern contains a / match against the full path, otherwise just the tail
-  local fullpat = '^' .. pat .. '$'
-
-  if pat:find('/') then
+  if has_slash then
     -- Similar to |autocmd-pattern|, if the pattern contains a '/' then check for a match against
     -- both the short file name (as typed) and the full file name (after expanding to full path
     -- and resolving symlinks)
