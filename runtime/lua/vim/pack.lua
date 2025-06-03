@@ -261,6 +261,47 @@ local function new_plug(spec)
   return { spec = spec_resolved, path = path }
 end
 
+--- Normalize plug array: gather non-conflicting data from duplicated entries.
+--- @param plugs vim.pack.Plug[]
+--- @return vim.pack.Plug[]
+local function normalize_plugs(plugs)
+  --- @type table<string, { plug: vim.pack.Plug, id: integer }>
+  local plug_map = {}
+  local n = 0
+  for _, p in ipairs(plugs) do
+    -- Collect
+    local p_data = plug_map[p.path]
+    if p_data == nil then
+      n = n + 1
+      plug_map[p.path] = { plug = p, id = n }
+      p_data = plug_map[p.path]
+    end
+    -- TODO(echasnovski): if both versions are `vim.VersionRange`, collect as
+    -- their intersection. Needs `vim.version.intersect`.
+    p_data.plug.spec.version = vim.F.if_nil(p_data.plug.spec.version, p.spec.version)
+
+    -- Ensure no conflicts
+    local spec_ref, spec = p_data.plug.spec, p.spec
+    if spec_ref.source ~= spec.source then
+      local src_1, src_2 = tostring(spec_ref.source), tostring(spec.source)
+      local msg = string.format('Conflicting `source` for `%s`:\n%s\n%s', spec.name, src_1, src_2)
+      error(msg)
+    end
+    if spec_ref.version ~= spec.version then
+      local ver_1, ver_2 = tostring(spec_ref.version), tostring(spec.version)
+      local msg = string.format('Conflicting `version` for `%s`:\n%s\n%s', spec.name, ver_1, ver_2)
+      error(msg)
+    end
+  end
+
+  --- @type vim.pack.Plug[]
+  local res = {}
+  for _, p_data in pairs(plug_map) do
+    res[p_data.id] = p_data.plug
+  end
+  return res
+end
+
 --- @alias vim.pack.Job { cmd: string[], cwd: string, out: string, err: string }
 
 --- @class (private) vim.pack.PlugJobInfo
@@ -732,9 +773,7 @@ function M.add(specs, opts)
 
   --- @type vim.pack.Plug[]
   local plugs = vim.tbl_map(new_plug, specs)
-  -- TODO(echasnovski): Normalize all plugins as a whole, mostly process
-  -- duplicates. This has little benefit now, but will be more sore after
-  -- packspec processing (as it might introduce conflicting dependencies).
+  plugs = normalize_plugs(plugs)
 
   -- Install
   --- @param p vim.pack.Plug

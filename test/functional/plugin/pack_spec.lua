@@ -3,6 +3,14 @@ describe('vim.pack', function()
     pending('works', function()
       -- TODO
     end)
+
+    pending('normalizes each spec', function() end)
+
+    pending('normalizes spec array', function()
+      -- TODO
+      -- Should silently ignore full duplicates (same `source`+`version`)
+      -- and error on conflicts.
+    end)
   end)
 
   describe('update()', function()
