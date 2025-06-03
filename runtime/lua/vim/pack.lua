@@ -47,8 +47,8 @@
 ---plugin1 = require('plugin1')
 ---```
 ---
----- Restart Nvim. Plugins that were not yet installed will be available on disk
----in target state after `add()` call.
+---- Restart Nvim (for example, with |:restart|). Plugins that were not yet
+---installed will be available on disk in target state after `add()` call.
 ---
 ---- To update all plugins with new changes:
 ---    - Execute |vim.pack.update()|. This will download updates from source and
@@ -59,7 +59,7 @@
 ---Switch plugin's version:
 ---- Update 'init.lua' for plugin to have desired `version`. Let's say, plugin
 ---named 'plugin1' has changed to `vim.version.range('*')`.
----- Restart Nvim. The plugin's actual state on disk is not yet changed.
+---- |:restart|. The plugin's actual state on disk is not yet changed.
 ---- Execute `vim.pack.update({ 'plugin1' })`.
 ---- Review changes and either confirm or discard them. If discarded, revert
 ---any changes in 'init.lua' as well or you will be prompted again next time
@@ -69,12 +69,12 @@
 ---- Update 'init.lua' for plugin to have `version` set to current commit hash.
 ---You can get it by running `vim.pack.update({ 'plugin-name' })` and yanking
 ---the word describing current state (looks like `abc12345`).
----- Restart Nvim.
+---- |:restart|.
 ---
 ---Unfreeze plugin to start receiving updates:
 ---- Update 'init.lua' for plugin to have `version` set to whichever version
 ---you want it to be updated.
----- Restart Nvim.
+---- |:restart|.
 ---
 ---Remove plugins from disk:
 ---- Use |vim.pack.del()| with a list of plugin names to remove. Make sure their specs
