@@ -92,14 +92,19 @@
 
 local api = vim.api
 local uv = vim.uv
+local async = require('vim._async')
 
 local M = {}
 
 -- Git ------------------------------------------------------------------------
+--- @async
 --- @param cmd string[]
 --- @param cwd string
-local function cli_sync(cmd, cwd)
-  local out = vim.system(cmd, { cwd = cwd, text = true, clear_env = true }):wait()
+--- @return string
+local function cli_async(cmd, cwd)
+  local sys_opts = { cwd = cwd, text = true, clear_env = true }
+  local out = async.await(3, vim.system, cmd, sys_opts) --- @type vim.SystemCompleted
+  async.await(1, vim.schedule)
   if out.code ~= 0 then
     error(out.stderr)
   end
@@ -174,23 +179,26 @@ local function git_cmd(cmd_name, ...)
   return { 'git', '-c', 'gc.auto=0', unpack(args) }
 end
 
+--- @async
 local function git_get_default_branch(cwd)
-  local res = cli_sync(git_cmd('get_default_origin_branch'), cwd)
+  local res = cli_async(git_cmd('get_default_origin_branch'), cwd)
   return (res:gsub('^origin/', ''))
 end
 
+--- @async
 --- @param cwd string
 local function git_get_branches(cwd)
-  local stdout, res = cli_sync(git_cmd('list_branches'), cwd), {}
+  local stdout, res = cli_async(git_cmd('list_branches'), cwd), {}
   for _, l in ipairs(vim.split(stdout, '\n')) do
     table.insert(res, l:match('^origin/(.+)$'))
   end
   return res
 end
 
+--- @async
 --- @param cwd string
 local function git_get_tags(cwd)
-  local stdout = cli_sync(git_cmd('list_tags'), cwd)
+  local stdout = cli_async(git_cmd('list_tags'), cwd)
   return vim.split(stdout, '\n')
 end
 
@@ -365,16 +373,16 @@ end
 --- - After done, preprocess job's `code`/`stdout`/`stderr`, run `process` to gather
 ---   useful info, and start next job.
 ---
+--- @async
 --- @package
---- @param prepare? fun(vim.pack.PlugExtra): nil
---- @param process? fun(vim.pack.PlugExtra): nil
+--- @param prepare? async fun(job: vim.pack.PlugJob): nil
+--- @param process? async fun(job: vim.pack.PlugJob): nil
 --- @param report_progress? fun(kind: 'report'|'end', msg: string, percent: integer): nil
 function PlugList:run(prepare, process, report_progress)
   prepare, process = prepare or function(_) end, process or function(_) end
   report_progress = report_progress or function(_, _, _) end
 
   local n_threads = math.max(math.floor(0.8 * #(uv.cpu_info() or {})), 1)
-  local timeout = 30000
 
   -- Use only plugs which didn't error before
   --- @param p vim.pack.PlugJob
@@ -386,22 +394,29 @@ function PlugList:run(prepare, process, report_progress)
   end
 
   -- Prepare for job execution
-  local n_total, n_started, n_finished = #list_noerror, 0, 0
+  local n_total, n_finished = #list_noerror, 0
   local function register_finished()
     n_finished = n_finished + 1
     local percent = math.floor(100 * n_finished / n_total)
     report_progress('report', n_finished .. '/' .. n_total, percent)
   end
 
-  local function run_next()
-    if n_started >= n_total then
-      return
-    end
-    n_started = n_started + 1
+  -- Run jobs async in parallel but wait for all to finish/timeout
+  report_progress('begin', '0/' .. n_total)
 
-    local p = list_noerror[n_started]
+  local funs = {} --- @type (async fun())[]
+  for _, p in ipairs(list_noerror) do
+    --- @async
+    funs[#funs + 1] = function()
+      prepare(p)
+      if #p.job.cmd == 0 or p.job.err ~= '' then
+        register_finished()
+        return
+      end
 
-    local function on_exit(sys_res)
+      local sys_opts = { cwd = p.job.cwd, text = true, clear_env = true }
+      local sys_res = async.await(3, vim.system, p.job.cmd, sys_opts) --- @type vim.SystemCompleted
+      async.await(1, vim.schedule)
       register_finished()
 
       --- @type string
@@ -409,37 +424,17 @@ function PlugList:run(prepare, process, report_progress)
       -- If error, skip custom processing
       if sys_res.code ~= 0 then
         p.job.err = 'Error code ' .. sys_res.code .. '\n' .. stderr
-        return run_next()
+        return
       end
 
       -- Process command results. Treat exit code 0 with `stderr` as warning.
       p.job.out = sys_res.stdout:gsub('\n+$', '')
       p.info.warn = p.info.warn .. (stderr == '' and '' or ('\n\n' .. stderr))
       process(p)
-      run_next()
     end
-
-    prepare(p)
-    if #p.job.cmd == 0 or p.job.err ~= '' then
-      register_finished()
-      return run_next()
-    end
-    local system_opts = { cwd = p.job.cwd, text = true, timeout = timeout, clear_env = true }
-    -- NOTE: `schedule_wrap(on_exit)` avoids "is not allowed in fast context"
-    vim.system(p.job.cmd, system_opts, vim.schedule_wrap(on_exit))
   end
 
-  -- Run jobs async in parallel but wait for all to finish/timeout
-  report_progress('begin', '0/' .. n_total)
-
-  for _ = 1, n_threads do
-    run_next()
-  end
-
-  local total_wait = timeout * math.ceil(n_total / n_threads)
-  vim.wait(total_wait, function()
-    return n_finished >= n_total
-  end, 1)
+  async.join(n_threads, funs)
 
   report_progress('end', n_total .. '/' .. n_total)
 
@@ -449,6 +444,7 @@ function PlugList:run(prepare, process, report_progress)
   end
 end
 
+--- @async
 --- @package
 function PlugList:install()
   -- Get user confirmation to install plugins
@@ -507,6 +503,7 @@ end
 
 --- Keep repos in detached HEAD state. Infer commit from resolved version.
 --- No local branches are created, branches from "origin" remote are used directly.
+--- @async
 --- @package
 --- @param opts { skip_same_sha: boolean }
 function PlugList:checkout(opts)
@@ -557,6 +554,7 @@ function PlugList:checkout(opts)
   end
 end
 
+--- @async
 --- @package
 function PlugList:download_updates()
   --- @param p vim.pack.PlugJob
@@ -567,12 +565,14 @@ function PlugList:download_updates()
   self:run(prepare, nil, report_progress)
 end
 
+--- @async
 --- @package
 function PlugList:resolve_version()
   local function list_in_line(name, list)
     return #list == 0 and '' or ('\n' .. name .. ': ' .. table.concat(list, ', '))
   end
 
+  --- @async
   --- @param p vim.pack.PlugJob
   local function prepare(p)
     if p.info.version_str ~= nil then
@@ -590,7 +590,7 @@ function PlugList:resolve_version()
     local branches, tags = git_get_branches(p.plug.path), git_get_tags(p.plug.path)
     if type(version) == 'string' then
       local is_branch = vim.tbl_contains(branches, version)
-      local is_tag_or_hash = pcall(cli_sync, git_cmd('get_hash', version), p.plug.path)
+      local is_tag_or_hash = pcall(cli_async, git_cmd('get_hash', version), p.plug.path)
       if not (is_branch or is_tag_or_hash) then
         p.job.err = string.format('`%s` is not a branch/tag/commit. Available:', version)
           .. list_in_line('Tags', tags)
@@ -623,6 +623,7 @@ function PlugList:resolve_version()
   self:run(prepare, nil)
 end
 
+--- @async
 --- @package
 function PlugList:infer_head()
   --- @param p vim.pack.PlugJob
@@ -636,6 +637,7 @@ function PlugList:infer_head()
   self:run(prepare, process)
 end
 
+--- @async
 --- @package
 function PlugList:infer_target()
   self:resolve_version()
@@ -652,16 +654,19 @@ function PlugList:infer_target()
   self:run(prepare, process)
 end
 
+--- @async
 --- @package
 function PlugList:infer_update_details()
   self:infer_head()
   self:infer_target()
 
+  --- @async
   --- @param p vim.pack.PlugJob
   local function prepare(p)
     local from, to = p.info.sha_head, p.info.sha_target
     p.job.cmd = from ~= to and git_cmd('log', from, to) or git_cmd('list_new_tags', to)
   end
+  --- @async
   --- @param p vim.pack.PlugJob
   local function process(p)
     p.info.update_details = p.job.out
@@ -670,7 +675,7 @@ function PlugList:infer_update_details()
     end
 
     -- Remove tags points at target (there might be several)
-    local cur_tags = cli_sync(git_cmd('list_cur_tags', p.info.sha_target), p.plug.path)
+    local cur_tags = cli_async(git_cmd('list_cur_tags', p.info.sha_target), p.plug.path)
     for _, tag in ipairs(vim.split(cur_tags, '\n')) do
       p.info.update_details = p.info.update_details:gsub(vim.pesc(tag) .. '\n?', '')
     end
@@ -681,6 +686,7 @@ end
 --- Trigger event for not yet errored plugin jobs
 --- Do so as `PlugList` method to preserve order, which might be important when
 --- dealing with dependencies.
+--- @async
 --- @package
 --- @param event_name 'PackInstallPre'|'PackInstall'|'PackUpdatePre'|'PackUpdate'|'PackDeletePre'|'PackDelete'
 function PlugList:trigger_event(event_name)
@@ -781,9 +787,14 @@ function M.add(specs, opts)
     return uv.fs_stat(p.path) == nil
   end, plugs)
   local pluglist_to_install = PlugList.new(plugs_to_install)
+
   if #plugs_to_install > 0 then
     git_ensure_exec()
-    pluglist_to_install:install()
+    --- @async
+    local function do_install()
+      pluglist_to_install:install()
+    end
+    async.run(do_install):wait()
   end
 
   -- Register and `:packadd` those actually on disk
@@ -923,8 +934,12 @@ local function feedback_confirm(plug_list)
     plug_list.list = vim.tbl_filter(function(p)
       return p.job.err == ''
     end, plug_list.list)
-    plug_list:checkout({ skip_same_sha = true })
-    feedback_log(plug_list)
+
+    --- @async
+    async.run(function()
+      plug_list:checkout({ skip_same_sha = true })
+      feedback_log(plug_list)
+    end)
   end
 
   -- Show report in new buffer in separate tabpage
@@ -973,20 +988,24 @@ function M.update(names, opts)
   end
   git_ensure_exec()
 
-  -- Download new changes
-  plug_list:download_updates()
+  --- @async
+  local function do_update()
+    -- Download new changes
+    plug_list:download_updates()
 
-  -- Compute change info: changelog if any, new tags if nothing to update
-  plug_list:infer_update_details()
+    -- Compute change info: changelog if any, new tags if nothing to update
+    plug_list:infer_update_details()
 
-  -- Perform update
-  if not opts.force then
-    feedback_confirm(plug_list)
-    return
+    -- Perform update
+    if not opts.force then
+      feedback_confirm(plug_list)
+      return
+    end
+
+    plug_list:checkout({ skip_same_sha = true })
+    feedback_log(plug_list)
   end
-
-  plug_list:checkout({ skip_same_sha = true })
-  feedback_log(plug_list)
+  async.run(do_update):wait()
 end
 
 --- Remove plugins from disk
@@ -1002,13 +1021,16 @@ function M.del(names)
     return
   end
 
-  plug_list:trigger_event('PackDeletePre')
-  for _, p in ipairs(plug_list.list) do
-    vim.fs.rm(p.plug.path, { recursive = true, force = true })
-    added_plugins[p.plug.path] = nil
-    notify('Removed plugin `' .. p.plug.spec.name .. '`', 'INFO')
-  end
-  plug_list:trigger_event('PackDelete')
+  --- @async
+  async.run(function()
+    plug_list:trigger_event('PackDeletePre')
+    for _, p in ipairs(plug_list.list) do
+      vim.fs.rm(p.plug.path, { recursive = true, force = true })
+      added_plugins[p.plug.path] = nil
+      notify('Removed plugin `' .. p.plug.spec.name .. '`', 'INFO')
+    end
+    plug_list:trigger_event('PackDelete')
+  end)
 end
 
 --- @inlinedoc
@@ -1036,22 +1058,26 @@ function M.get()
     end
   end
 
-  -- Process not added plugins
-  local plug_dir = get_plug_dir()
-  for n, t in vim.fs.dir(plug_dir, { depth = 1 }) do
-    local path = vim.fs.joinpath(plug_dir, n)
-    if t == 'directory' and not added_plugins[path] then
-      local spec = { name = n, source = cli_sync(git_cmd('get_origin'), path) }
-      table.insert(res, { spec = spec, path = path, was_added = false })
+  --- @async
+  local function do_get()
+    -- Process not added plugins
+    local plug_dir = get_plug_dir()
+    for n, t in vim.fs.dir(plug_dir, { depth = 1 }) do
+      local path = vim.fs.joinpath(plug_dir, n)
+      if t == 'directory' and not added_plugins[path] then
+        local spec = { name = n, source = cli_async(git_cmd('get_origin'), path) }
+        table.insert(res, { spec = spec, path = path, was_added = false })
+      end
     end
-  end
 
-  -- Make default `version` explicit
-  for _, p_data in ipairs(res) do
-    if p_data.spec.version == nil then
-      p_data.spec.version = git_get_default_branch(p_data.path)
+    -- Make default `version` explicit
+    for _, p_data in ipairs(res) do
+      if p_data.spec.version == nil then
+        p_data.spec.version = git_get_default_branch(p_data.path)
+      end
     end
   end
+  async.run(do_get):wait()
 
   return res
 end

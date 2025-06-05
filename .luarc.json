@@ -16,6 +16,7 @@
   },
   "diagnostics": {
     "groupFileStatus": {
+      "await": "Opened",
       "strict": "Opened",
       "strong": "Opened"
     },
