@@ -188,7 +188,8 @@ end
 --- @async
 --- @param cwd string
 local function git_get_branches(cwd)
-  local stdout, res = cli_async(git_cmd('list_branches'), cwd), {}
+  local stdout = cli_async(git_cmd('list_branches'), cwd)
+  local res = {}
   for _, l in ipairs(vim.split(stdout, '\n')) do
     table.insert(res, l:match('^origin/(.+)$'))
   end
@@ -289,16 +290,17 @@ local function normalize_plugs(plugs)
     p_data.plug.spec.version = vim.F.if_nil(p_data.plug.spec.version, p.spec.version)
 
     -- Ensure no conflicts
-    local spec_ref, spec = p_data.plug.spec, p.spec
+    local spec_ref = p_data.plug.spec
+    local spec = p.spec
     if spec_ref.source ~= spec.source then
-      local src_1, src_2 = tostring(spec_ref.source), tostring(spec.source)
-      local msg = string.format('Conflicting `source` for `%s`:\n%s\n%s', spec.name, src_1, src_2)
-      error(msg)
+      local src_1 = tostring(spec_ref.source)
+      local src_2 = tostring(spec.source)
+      error(('Conflicting `source` for `%s`:\n%s\n%s'):format(spec.name, src_1, src_2))
     end
     if spec_ref.version ~= spec.version then
-      local ver_1, ver_2 = tostring(spec_ref.version), tostring(spec.version)
-      local msg = string.format('Conflicting `version` for `%s`:\n%s\n%s', spec.name, ver_1, ver_2)
-      error(msg)
+      local ver_1 = tostring(spec_ref.version)
+      local ver_2 = tostring(spec.version)
+      error(('Conflicting `version` for `%s`:\n%s\n%s'):format(spec.name, ver_1, ver_2))
     end
   end
 
@@ -349,7 +351,8 @@ end
 --- @param names string[]?
 --- @return vim.pack.PlugList
 function PlugList.from_names(names)
-  local all_plugins, plugs = M.get(), {}
+  local all_plugins = M.get()
+  local plugs = {}
   -- Preserve plugin order; might be important during checkout or event trigger
   for _, p_data in ipairs(all_plugins) do
     -- NOTE: By default include only added plugins (and not all on disk). Using
@@ -377,10 +380,14 @@ end
 --- @package
 --- @param prepare? async fun(job: vim.pack.PlugJob): nil
 --- @param process? async fun(job: vim.pack.PlugJob): nil
---- @param report_progress? fun(kind: 'report'|'end', msg: string, percent: integer): nil
-function PlugList:run(prepare, process, report_progress)
-  prepare, process = prepare or function(_) end, process or function(_) end
-  report_progress = report_progress or function(_, _, _) end
+--- @param progress_title? string
+function PlugList:run(prepare, process, progress_title)
+  prepare = prepare or function(_) end
+  process = process or function(_) end
+  local report_progress = function(_, _, _) end
+  if progress_title ~= nil then
+    report_progress = require('vim.pack._lsp').new_progress_report(progress_title)
+  end
 
   local n_threads = math.max(math.floor(0.8 * #(uv.cpu_info() or {})), 1)
 
@@ -440,8 +447,30 @@ function PlugList:run(prepare, process, report_progress)
 
   -- Clean up. Preserve errors to stop processing plugin after the first one.
   for _, p in ipairs(list_noerror) do
-    p.job.cmd, p.job.cwd, p.job.out = {}, p.plug.path, ''
+    p.job.cmd = {}
+    p.job.cwd = p.plug.path
+    p.job.out = ''
   end
+end
+
+--- @param msg string
+local function confirm(msg)
+  -- Work around confirmation message not showing during startup.
+  -- This is a semi-regression of #31525: some redraw during startup makes
+  -- confirmation message disappear.
+  -- TODO: Remove when #34088 is resolved.
+  if vim.v.vim_did_enter == 1 then
+    return vim.fn.confirm(msg, 'Proceed? &Yes\n&No', 1, 'Question') == 1
+  end
+
+  msg = msg .. '\nProceed? [Y]es, (N)o'
+  vim.defer_fn(function()
+    vim.print(msg)
+  end, 100)
+  local ok, char = pcall(vim.fn.getcharstr)
+  local res = (ok and (char == 'y' or char == 'Y' or char == '\r')) and 1 or 0
+  vim.cmd.redraw()
+  return res == 1
 end
 
 --- @async
@@ -452,26 +481,9 @@ function PlugList:install()
   local sources = vim.tbl_map(function(p)
     return p.plug.spec.source
   end, self.list)
-  local confirm_msg = 'These plugins will be installed:\n\n' .. table.concat(sources, '\n') .. '\n'
-  --- @type integer
-  local confirm_res
-  if vim.v.vim_did_enter == 1 then
-    confirm_res = vim.fn.confirm(confirm_msg, 'Proceed? &Yes\n&No', 1, 'Question')
-  else
-    -- Work around confirmation message not showing during startup.
-    -- This is a semi-regression of #31525: some redraw during startup makes
-    -- confirmation message disappear.
-    -- TODO: Remove when #34088 is resolved.
-    confirm_msg = confirm_msg .. '\nProceed? [Y]es, (N)o'
-    vim.defer_fn(function()
-      vim.print(confirm_msg)
-    end, 100)
-    local ok, char = pcall(vim.fn.getcharstr)
-    confirm_res = (ok and (char == 'y' or char == 'Y' or char == '\r')) and 1 or 0
-    vim.cmd.redraw()
-  end
-
-  if confirm_res ~= 1 then
+  local sources_str = table.concat(sources, '\n')
+  local confirm_msg = ('These plugins will be installed:\n\n%s\n'):format(sources_str)
+  if not confirm(confirm_msg) then
     for _, p in ipairs(self.list) do
       p.job.err = 'Installation was not confirmed'
     end
@@ -488,8 +500,7 @@ function PlugList:install()
     p.job.cwd = uv.cwd() --[[@as string]]
     p.job.cmd = git_cmd('clone', p.plug.spec.source, p.plug.path)
   end
-  local report_progress = require('vim.pack._lsp').new_progress_report('Installing plugins')
-  self:run(prepare, nil, report_progress)
+  self:run(prepare, nil, 'Installing plugins')
 
   -- Checkout to target version. Do not skip checkout even if HEAD and target
   -- have same commit hash to have installed repo in expected detached HEAD
@@ -536,8 +547,7 @@ function PlugList:checkout(opts)
   end
   --- @param p vim.pack.PlugJob
   local function process(p)
-    local msg = string.format('Updated state to `%s` in `%s`', p.info.version_str, p.plug.spec.name)
-    notify(msg, 'INFO')
+    notify(('Updated state to `%s` in `%s`'):format(p.info.version_str, p.plug.spec.name), 'INFO')
   end
   plug_list:run(prepare, process)
 
@@ -561,8 +571,7 @@ function PlugList:download_updates()
   local function prepare(p)
     p.job.cmd = git_cmd('fetch')
   end
-  local report_progress = require('vim.pack._lsp').new_progress_report('Downloading updates')
-  self:run(prepare, nil, report_progress)
+  self:run(prepare, nil, 'Downloading updates')
 end
 
 --- @async
@@ -587,18 +596,20 @@ function PlugList:resolve_version()
     end
 
     -- Allow specifying non-version-range like version: branch or commit.
-    local branches, tags = git_get_branches(p.plug.path), git_get_tags(p.plug.path)
+    local branches = git_get_branches(p.plug.path)
+    local tags = git_get_tags(p.plug.path)
     if type(version) == 'string' then
       local is_branch = vim.tbl_contains(branches, version)
       local is_tag_or_hash = pcall(cli_async, git_cmd('get_hash', version), p.plug.path)
       if not (is_branch or is_tag_or_hash) then
-        p.job.err = string.format('`%s` is not a branch/tag/commit. Available:', version)
+        p.job.err = ('`%s` is not a branch/tag/commit. Available:'):format(version)
           .. list_in_line('Tags', tags)
           .. list_in_line('Branches', branches)
         return
       end
 
-      p.info.version_str, p.info.version_ref = version, (is_branch and 'origin/' or '') .. version
+      p.info.version_str = version
+      p.info.version_ref = (is_branch and 'origin/' or '') .. version
       return
     end
     --- @cast version vim.VersionRange
@@ -608,8 +619,8 @@ function PlugList:resolve_version()
     for _, tag in ipairs(tags) do
       local ver_tag = vim.version.parse(tag)
       table.insert(semver_tags, ver_tag ~= nil and tag or nil)
-      local is_in_range = ver_tag ~= nil and version:has(ver_tag)
-      if is_in_range and (last_ver_tag == nil or ver_tag > last_ver_tag) then
+      local is_in_range = ver_tag and version:has(ver_tag)
+      if is_in_range and (not last_ver_tag or ver_tag > last_ver_tag) then
         p.info.version_str, last_ver_tag = tag, ver_tag
       end
     end
@@ -663,7 +674,8 @@ function PlugList:infer_update_details()
   --- @async
   --- @param p vim.pack.PlugJob
   local function prepare(p)
-    local from, to = p.info.sha_head, p.info.sha_target
+    local from = p.info.sha_head
+    local to = p.info.sha_target
     p.job.cmd = from ~= to and git_cmd('log', from, to) or git_cmd('list_new_tags', to)
   end
   --- @async
@@ -674,9 +686,9 @@ function PlugList:infer_update_details()
       return
     end
 
-    -- Remove tags points at target (there might be several)
+    -- Remove tags pointing at target (there might be several)
     local cur_tags = cli_async(git_cmd('list_cur_tags', p.info.sha_target), p.plug.path)
-    for _, tag in ipairs(vim.split(cur_tags, '\n')) do
+    for tag in vim.gsplit(cur_tags, '\n') do
       p.info.update_details = p.info.update_details:gsub(vim.pesc(tag) .. '\n?', '')
     end
   end
@@ -701,15 +713,14 @@ end
 --- @param action_name string
 function PlugList:show_notifications(action_name)
   for _, p in ipairs(self.list) do
-    local name, warn = p.plug.spec.name, p.info.warn
+    local name = p.plug.spec.name
+    local warn = p.info.warn
     if warn ~= '' then
-      local msg = string.format('Warnings in `%s` during %s:\n%s', name, action_name, warn)
-      notify(msg, 'WARN')
+      notify(('Warnings in `%s` during %s:\n%s'):format(name, action_name, warn), 'WARN')
     end
     local err = p.job.err
     if err ~= '' then
-      local msg = string.format('Error in `%s` during %s:\n%s', name, action_name, err)
-      error(msg)
+      error(('Error in `%s` during %s:\n%s'):format(name, action_name, err))
     end
   end
 end
@@ -812,29 +823,33 @@ end
 --- @return string
 local function compute_feedback_lines_single(p)
   if p.job.err ~= '' then
-    return '## ' .. p.plug.spec.name .. '\n\n  ' .. p.job.err:gsub('\n', '\n  ')
+    return ('## %s\n\n %s'):format(p.plug.spec.name, p.job.err:gsub('\n', '\n  '))
   end
 
   local parts = { '## ' .. p.plug.spec.name .. '\n' }
-  local version_suffix = p.info.version_str == '' and ''
-    or string.format(' (%s)', p.info.version_str)
+  local version_suffix = p.info.version_str == '' and '' or (' (%s)'):format(p.info.version_str)
 
   if p.info.sha_head == p.info.sha_target then
-    table.insert(parts, 'Path:   ' .. p.plug.path .. '\n')
-    table.insert(parts, 'Source: ' .. p.plug.spec.source .. '\n')
-    table.insert(parts, 'State:  ' .. p.info.sha_target .. version_suffix)
+    parts[#parts + 1] = table.concat({
+      'Path:   ' .. p.plug.path,
+      'Source: ' .. p.plug.spec.source,
+      'State:  ' .. p.info.sha_target .. version_suffix,
+    }, '\n')
 
     if p.info.update_details ~= '' then
       local details = p.info.update_details:gsub('\n', '\n• ')
-      table.insert(parts, '\n\nAvailable newer tags:\n• ' .. details)
+      parts[#parts + 1] = '\n\nAvailable newer tags:\n• ' .. details
     end
   else
-    table.insert(parts, 'Path:         ' .. p.plug.path .. '\n')
-    table.insert(parts, 'Source:       ' .. p.plug.spec.source .. '\n')
-    table.insert(parts, 'State before: ' .. p.info.sha_head .. '\n')
-    table.insert(parts, 'State after:  ' .. p.info.sha_target .. version_suffix)
-
-    table.insert(parts, '\n\nPending updates:\n' .. p.info.update_details)
+    parts[#parts + 1] = table.concat({
+      'Path:         ' .. p.plug.path,
+      'Source:       ' .. p.plug.spec.source,
+      'State before: ' .. p.info.sha_head,
+      'State after:  ' .. p.info.sha_target .. version_suffix,
+      '',
+      'Pending updates:',
+      p.info.update_details,
+    }, '\n')
   end
 
   return table.concat(parts, '')
@@ -875,7 +890,7 @@ end
 --- @param plug_list vim.pack.PlugList
 local function feedback_log(plug_list)
   local lines = compute_feedback_lines(plug_list, { skip_same_sha = true })
-  local title = string.format('========== Update %s ==========', get_timestamp())
+  local title = ('========== Update %s =========='):format(get_timestamp())
   table.insert(lines, 1, title)
   table.insert(lines, '')
 
@@ -884,13 +899,16 @@ local function feedback_log(plug_list)
   vim.fn.writefile(lines, log_path, 'a')
 end
 
-local function show_confirm_buf(lines, opts)
+--- @param lines string[]
+--- @param on_finish fun(bufnr: integer)
+local function show_confirm_buf(lines, on_finish)
   -- Show buffer in a separate tabpage
   local bufnr = api.nvim_create_buf(true, true)
   api.nvim_buf_set_name(bufnr, 'nvimpack://' .. bufnr .. '/confirm-update')
   api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.cmd.sbuffer({ bufnr, mods = { tab = vim.fn.tabpagenr('#') } })
-  local tab_num, win_id = api.nvim_tabpage_get_number(0), api.nvim_get_current_win()
+  local tab_num = api.nvim_tabpage_get_number(0)
+  local win_id = api.nvim_get_current_win()
 
   local delete_buffer = vim.schedule_wrap(function()
     pcall(api.nvim_buf_delete, bufnr, { force = true })
@@ -900,7 +918,7 @@ local function show_confirm_buf(lines, opts)
 
   -- Define action on accepting confirm
   local function finish()
-    opts.exec_on_write(bufnr)
+    on_finish(bufnr)
     delete_buffer()
   end
   -- - Use `nested` to allow other events (useful for statuslines)
@@ -919,8 +937,10 @@ local function show_confirm_buf(lines, opts)
   cancel_au_id = api.nvim_create_autocmd('WinClosed', { nested = true, callback = on_cancel })
 
   -- Set buffer-local options last (so that user autocmmands could override)
-  vim.bo[bufnr].modified, vim.bo[bufnr].modifiable = false, false
-  vim.bo[bufnr].buftype, vim.bo[bufnr].filetype = 'acwrite', 'nvimpack'
+  vim.bo[bufnr].modified = false
+  vim.bo[bufnr].modifiable = false
+  vim.bo[bufnr].buftype = 'acwrite'
+  vim.bo[bufnr].filetype = 'nvimpack'
 
   -- Attach in-process LSP for more capabilities
   vim.lsp.buf_attach_client(bufnr, require('vim.pack._lsp').client_id)
@@ -928,7 +948,7 @@ end
 
 --- @param plug_list vim.pack.PlugList
 local function feedback_confirm(plug_list)
-  local function finish_update()
+  local function finish_update(_)
     -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
     --- @param p vim.pack.PlugJob
     plug_list.list = vim.tbl_filter(function(p)
@@ -944,7 +964,7 @@ local function feedback_confirm(plug_list)
 
   -- Show report in new buffer in separate tabpage
   local lines = compute_feedback_lines(plug_list, { skip_same_sha = false })
-  show_confirm_buf(lines, { exec_on_write = finish_update })
+  show_confirm_buf(lines, finish_update)
 end
 
 --- @class vim.pack.keyset.update
