@@ -368,6 +368,37 @@ function PlugList.from_names(names)
   return PlugList.new(plugs)
 end
 
+--- @param title string
+--- @return fun(kind: 'begin'|'report'|'end', msg: string?, percent: integer?): nil
+local function new_progress_report(title)
+  -- TODO(echasnovski): currently print directly in command line because
+  -- there is no robust built-in way of showing progress:
+  -- - `vim.ui.progress()` is planned and is a good candidate to use here.
+  -- - Use `'$/progress'` implementation in 'vim.pack._lsp' if there is
+  --   a working built-in '$/progress' handler. Something like this:
+  --   ```lua
+  --   local progress_token_count = 0
+  --   function M.new_progress_report(title)
+  --     progress_token_count = progress_token_count + 1
+  --     return vim.schedule_wrap(function(kind, msg, percent)
+  --       local value = { kind = kind, message = msg, percentage = percent }
+  --       dispatchers.notification(
+  --         '$/progress',
+  --         { token = progress_token_count, value = value }
+  --       )
+  --     end
+  --   end
+  --   ```
+  -- Any of these choices is better as users can tweak how progress is shown.
+
+  return vim.schedule_wrap(function(kind, msg, percent)
+    local progress = kind == 'end' and 'done' or ('%3d%%'):format(percent)
+    print(('%s: %s: %s'):format(progress, title, msg))
+    -- Force redraw to show installation progress during startup
+    vim.cmd.redraw({ bang = true })
+  end)
+end
+
 --- Run jobs from plugin list in parallel
 ---
 --- For each plugin that hasn't errored yet:
@@ -384,10 +415,8 @@ end
 function PlugList:run(prepare, process, progress_title)
   prepare = prepare or function(_) end
   process = process or function(_) end
-  local report_progress = function(_, _, _) end
-  if progress_title ~= nil then
-    report_progress = require('vim.pack._lsp').new_progress_report(progress_title)
-  end
+  local report_progress = progress_title ~= nil and new_progress_report(progress_title)
+    or function(_, _, _) end
 
   local n_threads = math.max(math.floor(0.8 * #(uv.cpu_info() or {})), 1)
 
@@ -409,7 +438,7 @@ function PlugList:run(prepare, process, progress_title)
   end
 
   -- Run jobs async in parallel but wait for all to finish/timeout
-  report_progress('begin', '0/' .. n_total)
+  report_progress('begin', '0/' .. n_total, 0)
 
   local funs = {} --- @type (async fun())[]
   for _, p in ipairs(list_noerror) do
@@ -443,7 +472,7 @@ function PlugList:run(prepare, process, progress_title)
 
   async.join(n_threads, funs)
 
-  report_progress('end', n_total .. '/' .. n_total)
+  report_progress('end', n_total .. '/' .. n_total, 100)
 
   -- Clean up. Preserve errors to stop processing plugin after the first one.
   for _, p in ipairs(list_noerror) do

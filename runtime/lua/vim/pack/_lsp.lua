@@ -166,21 +166,4 @@ M.client_id = vim.lsp.start(
   { attach = false }
 )
 
-local progress_token_count = 0
-
---- @return fun(kind: 'begin'|'report'|'end', msg: string?, percent: integer?): nil
-function M.new_progress_report(title)
-  progress_token_count = progress_token_count + 1
-
-  return vim.schedule_wrap(function(kind, msg, percent)
-    local value = { kind = kind, message = msg, percentage = percent }
-    if kind == 'begin' then
-      value.title = title
-    elseif kind == 'end' then
-      value.percentage = nil
-    end
-    dispatchers.notification('$/progress', { token = progress_token_count, value = value })
-  end)
-end
-
 return M
