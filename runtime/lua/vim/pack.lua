@@ -231,7 +231,7 @@ end
 --- URI from which to install and pull updates. Any format supported by `git clone` is allowed.
 --- @field source string
 ---
---- Name of plugin. Will be used as directory name. Default: basename of `source`.
+--- Name of plugin. Will be used as directory name. Default: `source` repository name.
 --- @field name? string
 ---
 --- Version to use for install and updates. Can be:
@@ -249,7 +249,7 @@ local function normalize_spec(spec)
   spec = type(spec) == 'string' and { source = spec } or spec
   vim.validate('spec', spec, 'table')
   vim.validate('spec.source', spec.source, 'string')
-  local name = (spec.name or spec.source):match('[^/]+$')
+  local name = (spec.name or spec.source:gsub('%.git$', '')):match('[^/]+$')
   vim.validate('spec.name', name, 'string')
   local function is_version(x)
     return type(x) == 'string' or is_version_range(x)
@@ -316,6 +316,7 @@ end
 
 --- @class (private) vim.pack.PlugJobInfo
 --- @field warn? string Concatenated job warnings
+--- @field installed? boolean Whether plugin was successfully installed.
 --- @field version_str? string `spec.version` with resolved version range.
 --- @field version_ref? string Resolved version as Git reference (if different
 ---   from `version_str`).
@@ -360,7 +361,7 @@ function PlugList.from_names(names)
     -- user's desired one might mismatch.
     -- TODO(echasnovski): Consider changing this if/when there is lockfile.
     --- @cast names string[]
-    if (names == nil and p_data.was_added) or vim.tbl_contains(names, p_data.spec.name) then
+    if (names == nil and p_data.was_added) or vim.tbl_contains(names or {}, p_data.spec.name) then
       table.insert(plugs, { spec = p_data.spec, path = p_data.path })
     end
   end
@@ -413,12 +414,9 @@ end
 --- @param process? async fun(job: vim.pack.PlugJob): nil
 --- @param progress_title? string
 function PlugList:run(prepare, process, progress_title)
-  prepare = prepare or function(_) end
-  process = process or function(_) end
+  local n_threads = 2 * #(uv.cpu_info() or { {} })
   local report_progress = progress_title ~= nil and new_progress_report(progress_title)
     or function(_, _, _) end
-
-  local n_threads = math.max(math.floor(0.8 * #(uv.cpu_info() or {})), 1)
 
   -- Use only plugs which didn't error before
   --- @param p vim.pack.PlugJob
@@ -444,7 +442,9 @@ function PlugList:run(prepare, process, progress_title)
   for _, p in ipairs(list_noerror) do
     --- @async
     funs[#funs + 1] = function()
-      prepare(p)
+      if prepare ~= nil then
+        prepare(p)
+      end
       if #p.job.cmd == 0 or p.job.err ~= '' then
         register_finished()
         return
@@ -466,7 +466,9 @@ function PlugList:run(prepare, process, progress_title)
       -- Process command results. Treat exit code 0 with `stderr` as warning.
       p.job.out = sys_res.stdout:gsub('\n+$', '')
       p.info.warn = p.info.warn .. (stderr == '' and '' or ('\n\n' .. stderr))
-      process(p)
+      if process ~= nil then
+        process(p)
+      end
     end
   end
 
@@ -529,7 +531,11 @@ function PlugList:install()
     p.job.cwd = uv.cwd() --[[@as string]]
     p.job.cmd = git_cmd('clone', p.plug.spec.source, p.plug.path)
   end
-  self:run(prepare, nil, 'Installing plugins')
+  --- @param p vim.pack.PlugJob
+  local function process(p)
+    p.info.installed = true
+  end
+  self:run(prepare, process, 'Installing plugins')
 
   -- Checkout to target version. Do not skip checkout even if HEAD and target
   -- have same commit hash to have installed repo in expected detached HEAD
@@ -717,9 +723,12 @@ function PlugList:infer_update_details()
 
     -- Remove tags pointing at target (there might be several)
     local cur_tags = cli_async(git_cmd('list_cur_tags', p.info.sha_target), p.plug.path)
-    for tag in vim.gsplit(cur_tags, '\n') do
-      p.info.update_details = p.info.update_details:gsub(vim.pesc(tag) .. '\n?', '')
+    local cur_tags_arr = vim.split(cur_tags, '\n')
+    local new_tags_arr = vim.split(p.info.update_details, '\n')
+    local is_not_cur_tag = function(s)
+      return not vim.tbl_contains(cur_tags_arr, s)
     end
+    p.info.update_details = table.concat(vim.tbl_filter(is_not_cur_tag, new_tags_arr), '\n')
   end
   self:run(prepare, process)
 end
@@ -836,10 +845,14 @@ function M.add(specs, opts)
     end
     async.run(do_install):wait()
   end
+  local failed_install = {} --- @type table<string,boolean>
+  for _, p_job in ipairs(pluglist_to_install.list) do
+    failed_install[p_job.plug.spec.name] = not p_job.info.installed
+  end
 
   -- Register and `:packadd` those actually on disk
   for _, p in ipairs(plugs) do
-    if uv.fs_stat(p.path) ~= nil then
+    if not failed_install[p.spec.name] then
       pack_add(p, opts.bang)
     end
   end

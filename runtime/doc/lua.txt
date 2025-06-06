@@ -2609,7 +2609,7 @@ Available events to hook into ~
       • {source}    (`string`) URI from which to install and pull updates. Any
                     format supported by `git clone` is allowed.
       • {name}?     (`string`) Name of plugin. Will be used as directory name.
-                    Default: basename of `source`.
+                    Default: `source` repository name.
       • {version}?  (`string|vim.VersionRange`) Version to use for install and
                     updates. Can be:
                     • `nil` (no value, default) to use repository's default
