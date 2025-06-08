@@ -264,16 +264,29 @@ local function normalize_spec(spec)
   return { source = spec.source, name = name, version = spec.version }
 end
 
+--- @class (private) vim.pack.PlugInfo
+--- @field err string The latest error when working on plugin. If non-empty,
+---   all further actions should not be done (including triggering events).
+--- @field did_install? boolean Whether plugin was successfully installed.
+--- @field version_str? string `spec.version` with resolved version range.
+--- @field version_ref? string Resolved version as Git reference (if different
+---   from `version_str`).
+--- @field sha_head? string Git hash of HEAD.
+--- @field sha_target? string Git hash of `version_ref`.
+--- @field update_details? string Details about the update:: changelog if HEAD
+---   and target are different, available newer tags otherwise.
+
 --- @class (private) vim.pack.Plug
 --- @field spec vim.pack.SpecResolved
 --- @field path string
+--- @field info vim.pack.PlugInfo Gathered information about plugin.
 
 --- @param spec string|vim.pack.Spec
 --- @return vim.pack.Plug
 local function new_plug(spec)
   local spec_resolved = normalize_spec(spec)
   local path = vim.fs.joinpath(get_plug_dir(), spec_resolved.name)
-  return { spec = spec_resolved, path = path }
+  return { spec = spec_resolved, path = path, info = { err = '' } }
 end
 
 --- Normalize plug array: gather non-conflicting data from duplicated entries.
@@ -318,26 +331,8 @@ local function normalize_plugs(plugs)
   return res
 end
 
---- @alias vim.pack.Job { cmd: string[], cwd: string, out: string, err: string }
-
---- @class (private) vim.pack.PlugJobInfo
---- @field warn? string Concatenated job warnings
---- @field did_install? boolean Whether plugin was successfully installed.
---- @field version_str? string `spec.version` with resolved version range.
---- @field version_ref? string Resolved version as Git reference (if different
----   from `version_str`).
---- @field sha_head? string Git hash of HEAD.
---- @field sha_target? string Git hash of `version_ref`.
---- @field update_details? string Details about the update:: changelog if HEAD
----   and target are different, available newer tags otherwise.
-
---- @class (private) vim.pack.PlugJob
---- @field plug vim.pack.Plug
---- @field job { cmd: string[], cwd: string, out: string, err: string }
---- @field info vim.pack.PlugJobInfo
-
---- @class (private) vim.pack.PlugList List of plugin along with job and info
---- @field list vim.pack.PlugJob[]
+--- @class (private) vim.pack.PlugList Plugin list with methods that operate on it
+--- @field list vim.pack.Plug[]
 local PlugList = {}
 PlugList.__index = PlugList
 
@@ -345,13 +340,7 @@ PlugList.__index = PlugList
 --- @param plugs vim.pack.Plug[]
 --- @return vim.pack.PlugList
 function PlugList.new(plugs)
-  --- @type vim.pack.PlugJob[]
-  local list = {}
-  for i, p in ipairs(plugs) do
-    local job = { cmd = {}, cwd = p.path, out = '', err = '' }
-    list[i] = { plug = p, job = job, info = { warn = '' } }
-  end
-  return setmetatable({ list = list }, PlugList)
+  return setmetatable({ list = vim.deepcopy(plugs) }, PlugList)
 end
 
 --- @package
@@ -368,7 +357,7 @@ function PlugList.from_names(names)
     -- TODO(echasnovski): Consider changing this if/when there is lockfile.
     --- @cast names string[]
     if (names == nil and p_data.was_added) or vim.tbl_contains(names or {}, p_data.spec.name) then
-      table.insert(plugs, { spec = p_data.spec, path = p_data.path })
+      table.insert(plugs, new_plug(p_data.spec))
     end
   end
 
@@ -408,7 +397,7 @@ end
 
 --- Execute function in parallel for each plugin in the list
 --- @async
---- @param f async fun(p: vim.pack.PlugJob): nil
+--- @param f async fun(p: vim.pack.Plug): nil
 --- @param progress_title? string
 function PlugList:run(f, progress_title)
   local n_threads = 2 * #(uv.cpu_info() or { {} })
@@ -416,9 +405,9 @@ function PlugList:run(f, progress_title)
     or function(_, _, _) end
 
   -- Use only plugs which didn't error before
-  --- @param p vim.pack.PlugJob
+  --- @param p vim.pack.Plug
   local list_noerror = vim.tbl_filter(function(p)
-    return p.job.err == ''
+    return p.info.err == ''
   end, self.list)
   if #list_noerror == 0 then
     return
@@ -446,7 +435,7 @@ function PlugList:run(f, progress_title)
       local function on_finish(err)
         register_finished()
         if err then
-          p.job.err = err
+          p.info.err = err
         end
       end
       async.run(plugin_f, on_finish)
@@ -488,14 +477,14 @@ local function confirm(msg)
 end
 
 --- @async
---- @param p vim.pack.PlugJob
+--- @param p vim.pack.Plug
 local function clone(p)
-  cli_async(git_cmd('clone', p.plug.spec.source, p.plug.path), uv.cwd() or '')
+  cli_async(git_cmd('clone', p.spec.source, p.path), uv.cwd() or '')
   p.info.did_install = true
 end
 
 --- @async
---- @param p vim.pack.PlugJob
+--- @param p vim.pack.Plug
 local function resolve_version(p)
   local function list_in_line(name, list)
     return #list == 0 and '' or ('\n' .. name .. ': ' .. table.concat(list, ', '))
@@ -505,21 +494,21 @@ local function resolve_version(p)
   if p.info.version_str ~= nil then
     return
   end
-  local version = p.plug.spec.version
+  local version = p.spec.version
 
   -- Default branch
   if version == nil then
-    p.info.version_str = git_get_default_branch(p.plug.path)
+    p.info.version_str = git_get_default_branch(p.path)
     p.info.version_ref = 'origin/' .. p.info.version_str
     return
   end
 
   -- Non-version-range like version: branch, tag, or commit hash
-  local branches = git_get_branches(p.plug.path)
-  local tags = git_get_tags(p.plug.path)
+  local branches = git_get_branches(p.path)
+  local tags = git_get_tags(p.path)
   if type(version) == 'string' then
     local is_branch = vim.tbl_contains(branches, version)
-    local is_tag_or_hash = pcall(cli_async, git_cmd('get_hash', version), p.plug.path)
+    local is_tag_or_hash = pcall(cli_async, git_cmd('get_hash', version), p.path)
     if not (is_branch or is_tag_or_hash) then
       local err = ('`%s` is not a branch/tag/commit. Available:'):format(version)
         .. list_in_line('Tags', tags)
@@ -553,43 +542,43 @@ local function resolve_version(p)
 end
 
 --- @async
---- @param p vim.pack.PlugJob
+--- @param p vim.pack.Plug
 local function infer_states(p)
-  p.info.sha_head = p.info.sha_head or cli_async(git_cmd('get_hash', 'HEAD'), p.plug.path)
+  p.info.sha_head = p.info.sha_head or cli_async(git_cmd('get_hash', 'HEAD'), p.path)
 
   resolve_version(p)
   local target_ref = p.info.version_ref or p.info.version_str --[[@as string]]
-  p.info.sha_target = p.info.sha_target or cli_async(git_cmd('get_hash', target_ref), p.plug.path)
+  p.info.sha_target = p.info.sha_target or cli_async(git_cmd('get_hash', target_ref), p.path)
 end
 
 --- @async
---- @param p vim.pack.PlugJob
+--- @param p vim.pack.Plug
 --- @param timestamp string
 local function checkout(p, timestamp)
   -- Infer current and target SHAs
   infer_states(p)
 
   -- Stash
-  cli_async(git_cmd('stash', timestamp), p.plug.path)
+  cli_async(git_cmd('stash', timestamp), p.path)
 
   -- Checkout
-  cli_async(git_cmd('checkout', p.info.sha_target), p.plug.path)
-  notify(('Updated state to `%s` in `%s`'):format(p.info.version_str, p.plug.spec.name), 'INFO')
+  cli_async(git_cmd('checkout', p.info.sha_target), p.path)
+  notify(('Updated state to `%s` in `%s`'):format(p.info.version_str, p.spec.name), 'INFO')
 end
 
 --- @async
 --- @package
 function PlugList:install()
   -- Get user confirmation to install plugins
-  --- @param p vim.pack.PlugJob
+  --- @param p vim.pack.Plug
   local sources = vim.tbl_map(function(p)
-    return p.plug.spec.source
+    return p.spec.source
   end, self.list)
   local sources_str = table.concat(sources, '\n')
   local confirm_msg = ('These plugins will be installed:\n\n%s\n'):format(sources_str)
   if not confirm(confirm_msg) then
     for _, p in ipairs(self.list) do
-      p.job.err = 'Installation was not confirmed'
+      p.info.err = 'Installation was not confirmed'
     end
     return
   end
@@ -624,7 +613,7 @@ function PlugList:checkout(opts)
 
   local plugs_to_checkout = vim.deepcopy(self)
   if opts.skip_same_sha then
-    --- @param p vim.pack.PlugJob
+    --- @param p vim.pack.Plug
     plugs_to_checkout.list = vim.tbl_filter(function(p)
       return p.info.sha_head ~= p.info.sha_target
     end, plugs_to_checkout.list)
@@ -644,7 +633,7 @@ function PlugList:checkout(opts)
   -- (Re)Generate help tags according to the current help files
   for _, p in ipairs(plugs_to_checkout.list) do
     -- Completely redo tags
-    local doc_dir = p.plug.path .. '/doc'
+    local doc_dir = p.path .. '/doc'
     vim.fn.delete(doc_dir .. '/tags')
     -- Use `pcall()` because `:helptags` errors if there is no 'doc/' directory
     -- or if it is empty
@@ -653,21 +642,21 @@ function PlugList:checkout(opts)
 end
 
 --- @async
---- @param p vim.pack.PlugJob
+--- @param p vim.pack.Plug
 local function infer_update_details(p)
   infer_states(p)
 
   local from = p.info.sha_head
   local to = p.info.sha_target
   local cmd = from ~= to and git_cmd('log', from, to) or git_cmd('list_new_tags', to)
-  p.info.update_details = cli_async(cmd, p.plug.path)
+  p.info.update_details = cli_async(cmd, p.path)
 
   if p.info.sha_head ~= p.info.sha_target or p.info.update_details == '' then
     return
   end
 
   -- Remove tags pointing at target (there might be several)
-  local cur_tags = cli_async(git_cmd('list_cur_tags', p.info.sha_target), p.plug.path)
+  local cur_tags = cli_async(git_cmd('list_cur_tags', p.info.sha_target), p.path)
   local cur_tags_arr = vim.split(cur_tags, '\n')
   local new_tags_arr = vim.split(p.info.update_details, '\n')
   local function is_not_cur_tag(s)
@@ -683,8 +672,9 @@ end
 --- @param event_name 'PackInstallPre'|'PackInstall'|'PackUpdatePre'|'PackUpdate'|'PackDeletePre'|'PackDelete'
 function PlugList:trigger_event(event_name)
   for _, p in ipairs(self.list) do
-    if p.job.err == '' then
-      vim.api.nvim_exec_autocmds(event_name, { pattern = p.plug.path, data = vim.deepcopy(p.plug) })
+    if p.info.err == '' then
+      local data = { spec = vim.deepcopy(p.spec), path = p.path }
+      vim.api.nvim_exec_autocmds(event_name, { pattern = p.path, data = data })
     end
   end
 end
@@ -772,8 +762,8 @@ function M.add(specs, opts)
     async.run(do_install):wait()
   end
   local failed_install = {} --- @type table<string,boolean>
-  for _, p_job in ipairs(pluglist_to_install.list) do
-    failed_install[p_job.plug.spec.name] = not p_job.info.did_install
+  for _, p in ipairs(pluglist_to_install.list) do
+    failed_install[p.spec.name] = not p.info.did_install
   end
 
   -- Register and `:packadd` those actually on disk
@@ -785,26 +775,26 @@ function M.add(specs, opts)
 
   -- Delay showing errors to have "good" plugins added first
   for _, p in ipairs(pluglist_to_install.list) do
-    if p.job.err ~= '' then
-      error(('Error in `%s` during installation:\n%s'):format(p.plug.spec.name, p.job.err))
+    if p.info.err ~= '' then
+      error(('Error in `%s` during installation:\n%s'):format(p.spec.name, p.info.err))
     end
   end
 end
 
---- @param p vim.pack.PlugJob
+--- @param p vim.pack.Plug
 --- @return string
 local function compute_feedback_lines_single(p)
-  if p.job.err ~= '' then
-    return ('## %s\n\n %s'):format(p.plug.spec.name, p.job.err:gsub('\n', '\n  '))
+  if p.info.err ~= '' then
+    return ('## %s\n\n %s'):format(p.spec.name, p.info.err:gsub('\n', '\n  '))
   end
 
-  local parts = { '## ' .. p.plug.spec.name .. '\n' }
+  local parts = { '## ' .. p.spec.name .. '\n' }
   local version_suffix = p.info.version_str == '' and '' or (' (%s)'):format(p.info.version_str)
 
   if p.info.sha_head == p.info.sha_target then
     parts[#parts + 1] = table.concat({
-      'Path:   ' .. p.plug.path,
-      'Source: ' .. p.plug.spec.source,
+      'Path:   ' .. p.path,
+      'Source: ' .. p.spec.source,
       'State:  ' .. p.info.sha_target .. version_suffix,
     }, '\n')
 
@@ -814,8 +804,8 @@ local function compute_feedback_lines_single(p)
     end
   else
     parts[#parts + 1] = table.concat({
-      'Path:         ' .. p.plug.path,
-      'Source:       ' .. p.plug.spec.source,
+      'Path:         ' .. p.path,
+      'Source:       ' .. p.spec.source,
       'State before: ' .. p.info.sha_head,
       'State after:  ' .. p.info.sha_target .. version_suffix,
       '',
@@ -834,7 +824,7 @@ local function compute_feedback_lines(plug_list, opts)
   -- Construct plugin line groups for better report
   local report_err, report_update, report_same = {}, {}, {}
   for _, p in ipairs(plug_list.list) do
-    local group_arr = #p.job.err > 0 and report_err
+    local group_arr = #p.info.err > 0 and report_err
       or (p.info.sha_head ~= p.info.sha_target and report_update or report_same)
     table.insert(group_arr, compute_feedback_lines_single(p))
   end
@@ -922,9 +912,9 @@ end
 local function feedback_confirm(plug_list)
   local function finish_update(_)
     -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
-    --- @param p vim.pack.PlugJob
+    --- @param p vim.pack.Plug
     plug_list.list = vim.tbl_filter(function(p)
-      return p.job.err == ''
+      return p.info.err == ''
     end, plug_list.list)
 
     --- @async
@@ -982,9 +972,10 @@ function M.update(names, opts)
   git_ensure_exec()
 
   --- @async
+  --- @param p vim.pack.Plug
   local function update(p)
     -- Fetch
-    cli_async(git_cmd('fetch'), p.plug.path)
+    cli_async(git_cmd('fetch'), p.path)
 
     -- Compute change info: changelog if any, new tags if nothing to update
     infer_update_details(p)
@@ -1017,9 +1008,9 @@ function M.del(names)
   plug_list:trigger_event('PackDeletePre')
 
   for _, p in ipairs(plug_list.list) do
-    vim.fs.rm(p.plug.path, { recursive = true, force = true })
-    added_plugins[p.plug.path] = nil
-    notify('Removed plugin `' .. p.plug.spec.name .. '`', 'INFO')
+    vim.fs.rm(p.path, { recursive = true, force = true })
+    added_plugins[p.path] = nil
+    notify('Removed plugin `' .. p.spec.name .. '`', 'INFO')
   end
 
   plug_list:trigger_event('PackDelete')
@@ -1038,8 +1029,8 @@ function M.get()
   -- there might be "holes" after `vim.pack.del()`.
   --- @type table<integer,vim.pack.Plug>
   local added = {}
-  for _, p in pairs(added_plugins) do
-    added[p.id] = p.plug
+  for _, p_added in pairs(added_plugins) do
+    added[p_added.id] = p_added.plug
   end
 
   --- @type vim.pack.PlugData[]
