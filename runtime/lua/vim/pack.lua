@@ -390,7 +390,6 @@ local function new_progress_report(title)
 end
 
 --- Execute function in parallel for each non-errored plugin in the list
---- @async
 --- @param plug_list vim.pack.Plug[]
 --- @param f async fun(p: vim.pack.Plug): nil
 --- @param progress_title? string
@@ -568,15 +567,11 @@ end
 local function checkout_list(plug_list, skip_same_sha)
   local timestamp = get_timestamp()
   --- @async
-  local function do_checkout()
-    --- @async
-    --- @param p vim.pack.Plug
-    local function f(p)
-      checkout(p, timestamp, skip_same_sha)
-    end
-    run_list(plug_list, f)
+  --- @param p vim.pack.Plug
+  local function do_checkout(p)
+    checkout(p, timestamp, skip_same_sha)
   end
-  async.run(do_checkout):wait()
+  run_list(plug_list, do_checkout)
 end
 
 --- @param plug_list vim.pack.Plug[]
@@ -597,25 +592,21 @@ local function install_list(plug_list)
 
   local timestamp = get_timestamp()
   --- @async
-  local function do_install()
-    --- @async
-    --- @param p vim.pack.Plug
-    local function f(p)
-      trigger_event(p, 'PackInstallPre')
+  --- @param p vim.pack.Plug
+  local function do_install(p)
+    trigger_event(p, 'PackInstallPre')
 
-      clone(p)
+    clone(p)
 
-      -- Do not skip checkout even if HEAD and target have same commit hash to
-      -- have new repo in expected detached HEAD state and generated help files.
-      checkout(p, timestamp, false)
+    -- Do not skip checkout even if HEAD and target have same commit hash to
+    -- have new repo in expected detached HEAD state and generated help files.
+    checkout(p, timestamp, false)
 
-      -- 'PackInstall' is triggered after 'PackUpdate' intentionally to have it
-      -- indicate "plugin is installed in its correct initial version"
-      trigger_event(p, 'PackInstall')
-    end
-    run_list(plug_list, f, 'Installing plugins')
+    -- 'PackInstall' is triggered after 'PackUpdate' intentionally to have it
+    -- indicate "plugin is installed in its correct initial version"
+    trigger_event(p, 'PackInstall')
   end
-  async.run(do_install):wait()
+  run_list(plug_list, do_install, 'Installing plugins')
 end
 
 --- @async
@@ -921,19 +912,15 @@ function M.update(names, opts)
   git_ensure_exec()
 
   --- @async
-  local function do_update()
-    --- @async
-    --- @param p vim.pack.Plug
-    local function f(p)
-      -- Fetch
-      cli_async(git_cmd('fetch'), p.path)
+  --- @param p vim.pack.Plug
+  local function do_update(p)
+    -- Fetch
+    cli_async(git_cmd('fetch'), p.path)
 
-      -- Compute change info: changelog if any, new tags if nothing to update
-      infer_update_details(p)
-    end
-    run_list(plug_list, f, 'Downloading updates')
+    -- Compute change info: changelog if any, new tags if nothing to update
+    infer_update_details(p)
   end
-  async.run(do_update):wait()
+  run_list(plug_list, do_update, 'Downloading updates')
 
   -- Perform update
   if not opts.force then
