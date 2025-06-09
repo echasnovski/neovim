@@ -331,22 +331,9 @@ local function normalize_plugs(plugs)
   return res
 end
 
---- @class (private) vim.pack.PlugList Plugin list with methods that operate on it
---- @field list vim.pack.Plug[]
-local PlugList = {}
-PlugList.__index = PlugList
-
---- @package
---- @param plugs vim.pack.Plug[]
---- @return vim.pack.PlugList
-function PlugList.new(plugs)
-  return setmetatable({ list = vim.deepcopy(plugs) }, PlugList)
-end
-
---- @package
 --- @param names string[]?
---- @return vim.pack.PlugList
-function PlugList.from_names(names)
+--- @return vim.pack.Plug[]
+local function plug_list_from_names(names)
   local all_plugins = M.get()
   local plugs = {}
   -- Preserve plugin order; might be important during checkout or event trigger
@@ -361,7 +348,7 @@ function PlugList.from_names(names)
     end
   end
 
-  return PlugList.new(plugs)
+  return plugs
 end
 
 --- @param p vim.pack.Plug
@@ -404,9 +391,10 @@ end
 
 --- Execute function in parallel for each non-errored plugin in the list
 --- @async
+--- @param plug_list vim.pack.Plug[]
 --- @param f async fun(p: vim.pack.Plug): nil
 --- @param progress_title? string
-function PlugList:run(f, progress_title)
+local function run_list(plug_list, f, progress_title)
   local n_threads = 2 * #(uv.cpu_info() or { {} })
   local report_progress = progress_title ~= nil and new_progress_report(progress_title)
     or function(_, _, _) end
@@ -414,7 +402,7 @@ function PlugList:run(f, progress_title)
   -- Construct array of functions to execute in parallel
   local n_finished = 0
   local funs = {} --- @type (async fun())[]
-  for _, p in ipairs(self.list) do
+  for _, p in ipairs(plug_list) do
     -- Run only for plugins which didn't error before
     if p.info.err == '' then
       --- @async
@@ -575,9 +563,9 @@ local function checkout(p, timestamp, skip_same_sha)
   pcall(vim.cmd.helptags, vim.fn.fnameescape(doc_dir))
 end
 
---- @package
+--- @param plug_list vim.pack.Plug[]
 --- @param skip_same_sha boolean
-function PlugList:checkout(skip_same_sha)
+local function checkout_list(plug_list, skip_same_sha)
   local timestamp = get_timestamp()
   --- @async
   local function do_checkout()
@@ -586,22 +574,22 @@ function PlugList:checkout(skip_same_sha)
     local function f(p)
       checkout(p, timestamp, skip_same_sha)
     end
-    self:run(f)
+    run_list(plug_list, f)
   end
   async.run(do_checkout):wait()
 end
 
---- @package
-function PlugList:install()
+--- @param plug_list vim.pack.Plug[]
+local function install_list(plug_list)
   -- Get user confirmation to install plugins
   local sources = {}
-  for _, p in ipairs(self.list) do
+  for _, p in ipairs(plug_list) do
     table.insert(sources, p.spec.source)
   end
   local sources_str = table.concat(sources, '\n')
   local confirm_msg = ('These plugins will be installed:\n\n%s\n'):format(sources_str)
   if not confirm(confirm_msg) then
-    for _, p in ipairs(self.list) do
+    for _, p in ipairs(plug_list) do
       p.info.err = 'Installation was not confirmed'
     end
     return
@@ -625,7 +613,7 @@ function PlugList:install()
       -- indicate "plugin is installed in its correct initial version"
       trigger_event(p, 'PackInstall')
     end
-    self:run(f, 'Installing plugins')
+    run_list(plug_list, f, 'Installing plugins')
   end
   async.run(do_install):wait()
 end
@@ -726,14 +714,13 @@ function M.add(specs, opts)
   local plugs_to_install = vim.tbl_filter(function(p)
     return uv.fs_stat(p.path) == nil
   end, plugs)
-  local pluglist_to_install = PlugList.new(plugs_to_install)
 
   if #plugs_to_install > 0 then
     git_ensure_exec()
-    pluglist_to_install:install()
+    install_list(plugs_to_install)
   end
   local failed_install = {} --- @type table<string,boolean>
-  for _, p in ipairs(pluglist_to_install.list) do
+  for _, p in ipairs(plugs_to_install) do
     failed_install[p.spec.name] = not p.info.did_install
   end
 
@@ -745,7 +732,7 @@ function M.add(specs, opts)
   end
 
   -- Delay showing errors to have "good" plugins added first
-  for _, p in ipairs(pluglist_to_install.list) do
+  for _, p in ipairs(plugs_to_install) do
     if p.info.err ~= '' then
       error(('Error in `%s` during installation:\n%s'):format(p.spec.name, p.info.err))
     end
@@ -788,13 +775,13 @@ local function compute_feedback_lines_single(p)
   return table.concat(parts, '')
 end
 
---- @param plug_list vim.pack.PlugList
+--- @param plug_list vim.pack.Plug[]
 --- @param skip_same_sha boolean
 --- @return string[]
 local function compute_feedback_lines(plug_list, skip_same_sha)
   -- Construct plugin line groups for better report
   local report_err, report_update, report_same = {}, {}, {}
-  for _, p in ipairs(plug_list.list) do
+  for _, p in ipairs(plug_list) do
     local group_arr = p.info.err ~= '' and report_err
       or (p.info.sha_head ~= p.info.sha_target and report_update or report_same)
     table.insert(group_arr, compute_feedback_lines_single(p))
@@ -820,7 +807,7 @@ local function compute_feedback_lines(plug_list, skip_same_sha)
   return vim.split(table.concat(lines, '\n\n'), '\n')
 end
 
---- @param plug_list vim.pack.PlugList
+--- @param plug_list vim.pack.Plug[]
 local function feedback_log(plug_list)
   local lines = compute_feedback_lines(plug_list, true)
   local title = ('========== Update %s =========='):format(get_timestamp())
@@ -879,11 +866,11 @@ local function show_confirm_buf(lines, on_finish)
   vim.lsp.buf_attach_client(bufnr, require('vim.pack._lsp').client_id)
 end
 
---- @param plug_list vim.pack.PlugList
+--- @param plug_list vim.pack.Plug[]
 local function feedback_confirm(plug_list)
   -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
   local function finish_update()
-    plug_list:checkout(true)
+    checkout_list(plug_list, true)
     feedback_log(plug_list)
   end
 
@@ -926,8 +913,8 @@ function M.update(names, opts)
   vim.validate('names', names, vim.islist, true, 'list')
   opts = vim.tbl_extend('force', { force = false }, opts or {})
 
-  local plug_list = PlugList.from_names(names)
-  if #plug_list.list == 0 then
+  local plug_list = plug_list_from_names(names)
+  if #plug_list == 0 then
     notify('Nothing to update', 'WARN')
     return
   end
@@ -944,7 +931,7 @@ function M.update(names, opts)
       -- Compute change info: changelog if any, new tags if nothing to update
       infer_update_details(p)
     end
-    plug_list:run(f, 'Downloading updates')
+    run_list(plug_list, f, 'Downloading updates')
   end
   async.run(do_update):wait()
 
@@ -954,7 +941,7 @@ function M.update(names, opts)
     return
   end
 
-  plug_list:checkout(true)
+  checkout_list(plug_list, true)
   feedback_log(plug_list)
 end
 
@@ -965,13 +952,13 @@ end
 function M.del(names)
   vim.validate('names', names, vim.islist, false, 'list')
 
-  local plug_list = PlugList.from_names(names)
-  if #plug_list.list == 0 then
+  local plug_list = plug_list_from_names(names)
+  if #plug_list == 0 then
     notify('Nothing to remove', 'WARN')
     return
   end
 
-  for _, p in ipairs(plug_list.list) do
+  for _, p in ipairs(plug_list) do
     trigger_event(p, 'PackDeletePre')
 
     vim.fs.rm(p.path, { recursive = true, force = true })
