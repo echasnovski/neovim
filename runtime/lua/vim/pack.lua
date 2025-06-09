@@ -364,6 +364,13 @@ function PlugList.from_names(names)
   return PlugList.new(plugs)
 end
 
+--- @param p vim.pack.Plug
+--- @param event_name 'PackInstallPre'|'PackInstall'|'PackUpdatePre'|'PackUpdate'|'PackDeletePre'|'PackDelete'
+local function trigger_event(p, event_name)
+  local data = { spec = vim.deepcopy(p.spec), path = p.path }
+  vim.api.nvim_exec_autocmds(event_name, { pattern = p.path, data = data })
+end
+
 --- @param title string
 --- @return fun(kind: 'begin'|'report'|'end', msg: string?, percent: integer?): nil
 local function new_progress_report(title)
@@ -389,13 +396,13 @@ local function new_progress_report(title)
 
   return vim.schedule_wrap(function(kind, msg, percent)
     local progress = kind == 'end' and 'done' or ('%3d%%'):format(percent)
-    print(('%s: %s: %s'):format(progress, title, msg))
+    print(('%s: %s %s'):format(progress, title, msg))
     -- Force redraw to show installation progress during startup
     vim.cmd.redraw({ bang = true })
   end)
 end
 
---- Execute function in parallel for each plugin in the list
+--- Execute function in parallel for each non-errored plugin in the list
 --- @async
 --- @param f async fun(p: vim.pack.Plug): nil
 --- @param progress_title? string
@@ -404,43 +411,35 @@ function PlugList:run(f, progress_title)
   local report_progress = progress_title ~= nil and new_progress_report(progress_title)
     or function(_, _, _) end
 
-  -- Use only plugs which didn't error before
-  --- @param p vim.pack.Plug
-  local list_noerror = vim.tbl_filter(function(p)
-    return p.info.err == ''
-  end, self.list)
-  if #list_noerror == 0 then
+  -- Construct array of functions to execute in parallel
+  local n_finished = 0
+  local funs = {} --- @type (async fun())[]
+  for _, p in ipairs(self.list) do
+    -- Run only for plugins which didn't error before
+    if p.info.err == '' then
+      --- @async
+      funs[#funs + 1] = function()
+        local ok, err = pcall(f, p)
+        if not ok then
+          p.info.err = err --[[@as string]]
+        end
+
+        -- Show progress
+        n_finished = n_finished + 1
+        local percent = math.floor(100 * n_finished / #funs)
+        local msg = ('(%d/%d) - %s'):format(n_finished, #funs, p.spec.name)
+        report_progress('report', msg, percent)
+      end
+    end
+  end
+
+  if #funs == 0 then
     return
   end
 
-  -- Prepare for job execution
-  local n_total, n_finished = #list_noerror, 0
-  local function register_finished()
-    n_finished = n_finished + 1
-    local percent = math.floor(100 * n_finished / n_total)
-    report_progress('report', n_finished .. '/' .. n_total, percent)
-  end
-
-  -- Run jobs async in parallel but wait for all to finish/timeout
-  report_progress('begin', '0/' .. n_total, 0)
-
-  local funs = {} --- @type (async fun())[]
-  for _, p in ipairs(list_noerror) do
-    --- @async
-    funs[#funs + 1] = function()
-      --- @async
-      local function plugin_f()
-        f(p)
-      end
-      local function on_finish(err)
-        register_finished()
-        if err then
-          p.info.err = err
-        end
-      end
-      async.run(plugin_f, on_finish)
-    end
-  end
+  -- Run async in parallel but wait for all to finish/timeout
+  local begin_msg = ('(0/%d)'):format(#funs)
+  report_progress('begin', begin_msg, 0)
 
   --- @async
   local function joined_f()
@@ -448,12 +447,8 @@ function PlugList:run(f, progress_title)
   end
   async.run(joined_f):wait()
 
-  local total_wait = 30000 * math.ceil(n_total / n_threads)
-  vim.wait(total_wait, function()
-    return n_finished >= n_total
-  end, 1)
-
-  report_progress('end', n_total .. '/' .. n_total, 100)
+  local end_msg = ('(%d/%d)'):format(#funs, #funs)
+  report_progress('end', end_msg, 100)
 end
 
 --- @param msg string
@@ -551,29 +546,58 @@ local function infer_states(p)
   p.info.sha_target = p.info.sha_target or cli_async(git_cmd('get_hash', target_ref), p.path)
 end
 
+--- Keep repos in detached HEAD state. Infer commit from resolved version.
+--- No local branches are created, branches from "origin" remote are used directly.
 --- @async
 --- @param p vim.pack.Plug
 --- @param timestamp string
-local function checkout(p, timestamp)
-  -- Infer current and target SHAs
+--- @param skip_same_sha boolean
+local function checkout(p, timestamp, skip_same_sha)
   infer_states(p)
+  if skip_same_sha and p.info.sha_head == p.info.sha_target then
+    return
+  end
 
-  -- Stash
+  trigger_event(p, 'PackUpdatePre')
+
   cli_async(git_cmd('stash', timestamp), p.path)
 
-  -- Checkout
   cli_async(git_cmd('checkout', p.info.sha_target), p.path)
   notify(('Updated state to `%s` in `%s`'):format(p.info.version_str, p.spec.name), 'INFO')
+
+  trigger_event(p, 'PackUpdate')
+
+  -- (Re)Generate help tags according to the current help files.
+  -- Also use `pcall()` because `:helptags` errors if there is no 'doc/'
+  -- directory or if it is empty.
+  local doc_dir = vim.fs.joinpath(p.path, 'doc')
+  vim.fn.delete(vim.fs.joinpath(doc_dir, 'tags'))
+  pcall(vim.cmd.helptags, vim.fn.fnameescape(doc_dir))
 end
 
---- @async
+--- @package
+--- @param skip_same_sha boolean
+function PlugList:checkout(skip_same_sha)
+  local timestamp = get_timestamp()
+  --- @async
+  local function do_checkout()
+    --- @async
+    --- @param p vim.pack.Plug
+    local function f(p)
+      checkout(p, timestamp, skip_same_sha)
+    end
+    self:run(f)
+  end
+  async.run(do_checkout):wait()
+end
+
 --- @package
 function PlugList:install()
   -- Get user confirmation to install plugins
-  --- @param p vim.pack.Plug
-  local sources = vim.tbl_map(function(p)
-    return p.spec.source
-  end, self.list)
+  local sources = {}
+  for _, p in ipairs(self.list) do
+    table.insert(sources, p.spec.source)
+  end
   local sources_str = table.concat(sources, '\n')
   local confirm_msg = ('These plugins will be installed:\n\n%s\n'):format(sources_str)
   if not confirm(confirm_msg) then
@@ -583,62 +607,27 @@ function PlugList:install()
     return
   end
 
-  -- Trigger relevant event
-  self:trigger_event('PackInstallPre')
-
-  -- Clone
-  self:run(clone, 'Installing plugins')
-
-  -- Checkout to target version. Do not skip checkout even if HEAD and target
-  -- have same commit hash to have installed repo in expected detached HEAD
-  -- state and generated help files.
-  self:checkout({ skip_same_sha = false })
-
-  -- NOTE: 'PackInstall' is triggered after 'PackUpdate' intentionally to have
-  -- it indicate "plugin is installed in its correct initial version"
-  self:trigger_event('PackInstall')
-end
-
---- Keep repos in detached HEAD state. Infer commit from resolved version.
---- No local branches are created, branches from "origin" remote are used directly.
---- @async
---- @package
---- @param opts { skip_same_sha: boolean }
-function PlugList:checkout(opts)
-  opts = vim.tbl_extend('force', { skip_same_sha = true }, opts or {})
-
-  -- First infer current and target SHAs in order to trigger events when *all*
-  -- relevant plugins are in the same state (not yet or already checked out).
-  self:run(infer_states)
-
-  local plugs_to_checkout = vim.deepcopy(self)
-  if opts.skip_same_sha then
-    --- @param p vim.pack.Plug
-    plugs_to_checkout.list = vim.tbl_filter(function(p)
-      return p.info.sha_head ~= p.info.sha_target
-    end, plugs_to_checkout.list)
-  end
-
-  plugs_to_checkout:trigger_event('PackUpdatePre')
-
   local timestamp = get_timestamp()
   --- @async
-  local function do_checkout(p)
-    checkout(p, timestamp)
-  end
-  plugs_to_checkout:run(do_checkout)
+  local function do_install()
+    --- @async
+    --- @param p vim.pack.Plug
+    local function f(p)
+      trigger_event(p, 'PackInstallPre')
 
-  plugs_to_checkout:trigger_event('PackUpdate')
+      clone(p)
 
-  -- (Re)Generate help tags according to the current help files
-  for _, p in ipairs(plugs_to_checkout.list) do
-    -- Completely redo tags
-    local doc_dir = p.path .. '/doc'
-    vim.fn.delete(doc_dir .. '/tags')
-    -- Use `pcall()` because `:helptags` errors if there is no 'doc/' directory
-    -- or if it is empty
-    pcall(vim.cmd.helptags, vim.fn.fnameescape(doc_dir))
+      -- Do not skip checkout even if HEAD and target have same commit hash to
+      -- have new repo in expected detached HEAD state and generated help files.
+      checkout(p, timestamp, false)
+
+      -- 'PackInstall' is triggered after 'PackUpdate' intentionally to have it
+      -- indicate "plugin is installed in its correct initial version"
+      trigger_event(p, 'PackInstall')
+    end
+    self:run(f, 'Installing plugins')
   end
+  async.run(do_install):wait()
 end
 
 --- @async
@@ -663,20 +652,6 @@ local function infer_update_details(p)
     return not vim.tbl_contains(cur_tags_arr, s)
   end
   p.info.update_details = table.concat(vim.tbl_filter(is_not_cur_tag, new_tags_arr), '\n')
-end
-
---- Trigger event for not yet errored plugin jobs
---- Do so as `PlugList` method to preserve order, which might be important when
---- dealing with dependencies.
---- @package
---- @param event_name 'PackInstallPre'|'PackInstall'|'PackUpdatePre'|'PackUpdate'|'PackDeletePre'|'PackDelete'
-function PlugList:trigger_event(event_name)
-  for _, p in ipairs(self.list) do
-    if p.info.err == '' then
-      local data = { spec = vim.deepcopy(p.spec), path = p.path }
-      vim.api.nvim_exec_autocmds(event_name, { pattern = p.path, data = data })
-    end
-  end
 end
 
 --- Map from plugin path to its data.
@@ -755,11 +730,7 @@ function M.add(specs, opts)
 
   if #plugs_to_install > 0 then
     git_ensure_exec()
-    --- @async
-    local function do_install()
-      pluglist_to_install:install()
-    end
-    async.run(do_install):wait()
+    pluglist_to_install:install()
   end
   local failed_install = {} --- @type table<string,boolean>
   for _, p in ipairs(pluglist_to_install.list) do
@@ -818,13 +789,13 @@ local function compute_feedback_lines_single(p)
 end
 
 --- @param plug_list vim.pack.PlugList
---- @param opts { skip_same_sha: boolean }
+--- @param skip_same_sha boolean
 --- @return string[]
-local function compute_feedback_lines(plug_list, opts)
+local function compute_feedback_lines(plug_list, skip_same_sha)
   -- Construct plugin line groups for better report
   local report_err, report_update, report_same = {}, {}, {}
   for _, p in ipairs(plug_list.list) do
-    local group_arr = #p.info.err > 0 and report_err
+    local group_arr = p.info.err ~= '' and report_err
       or (p.info.sha_head ~= p.info.sha_target and report_update or report_same)
     table.insert(group_arr, compute_feedback_lines_single(p))
   end
@@ -842,7 +813,7 @@ local function compute_feedback_lines(plug_list, opts)
   end
   append_report('# Error', report_err)
   append_report('# Update', report_update)
-  if not opts.skip_same_sha then
+  if not skip_same_sha then
     append_report('# Same', report_same)
   end
 
@@ -851,7 +822,7 @@ end
 
 --- @param plug_list vim.pack.PlugList
 local function feedback_log(plug_list)
-  local lines = compute_feedback_lines(plug_list, { skip_same_sha = true })
+  local lines = compute_feedback_lines(plug_list, true)
   local title = ('========== Update %s =========='):format(get_timestamp())
   table.insert(lines, 1, title)
   table.insert(lines, '')
@@ -862,7 +833,7 @@ local function feedback_log(plug_list)
 end
 
 --- @param lines string[]
---- @param on_finish fun(bufnr: integer)
+--- @param on_finish fun()
 local function show_confirm_buf(lines, on_finish)
   -- Show buffer in a separate tabpage
   local bufnr = api.nvim_create_buf(true, true)
@@ -880,7 +851,7 @@ local function show_confirm_buf(lines, on_finish)
 
   -- Define action on accepting confirm
   local function finish()
-    on_finish(bufnr)
+    on_finish()
     delete_buffer()
   end
   -- - Use `nested` to allow other events (useful for statuslines)
@@ -910,22 +881,14 @@ end
 
 --- @param plug_list vim.pack.PlugList
 local function feedback_confirm(plug_list)
-  local function finish_update(_)
-    -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
-    --- @param p vim.pack.Plug
-    plug_list.list = vim.tbl_filter(function(p)
-      return p.info.err == ''
-    end, plug_list.list)
-
-    --- @async
-    async.run(function()
-      plug_list:checkout({ skip_same_sha = true })
-      feedback_log(plug_list)
-    end)
+  -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
+  local function finish_update()
+    plug_list:checkout(true)
+    feedback_log(plug_list)
   end
 
   -- Show report in new buffer in separate tabpage
-  local lines = compute_feedback_lines(plug_list, { skip_same_sha = false })
+  local lines = compute_feedback_lines(plug_list, false)
   show_confirm_buf(lines, finish_update)
 end
 
@@ -933,7 +896,6 @@ end
 --- @inlinedoc
 --- @field force? boolean Whether to skip confirmation and make updates immediately. Default `false`.
 
---- @async
 --- Update plugins
 ---
 --- - Download new changes from source.
@@ -972,15 +934,19 @@ function M.update(names, opts)
   git_ensure_exec()
 
   --- @async
-  --- @param p vim.pack.Plug
-  local function update(p)
-    -- Fetch
-    cli_async(git_cmd('fetch'), p.path)
+  local function do_update()
+    --- @async
+    --- @param p vim.pack.Plug
+    local function f(p)
+      -- Fetch
+      cli_async(git_cmd('fetch'), p.path)
 
-    -- Compute change info: changelog if any, new tags if nothing to update
-    infer_update_details(p)
+      -- Compute change info: changelog if any, new tags if nothing to update
+      infer_update_details(p)
+    end
+    plug_list:run(f, 'Downloading updates')
   end
-  plug_list:run(update, 'Downloading updates')
+  async.run(do_update):wait()
 
   -- Perform update
   if not opts.force then
@@ -988,7 +954,7 @@ function M.update(names, opts)
     return
   end
 
-  plug_list:checkout({ skip_same_sha = true })
+  plug_list:checkout(true)
   feedback_log(plug_list)
 end
 
@@ -1005,15 +971,15 @@ function M.del(names)
     return
   end
 
-  plug_list:trigger_event('PackDeletePre')
-
   for _, p in ipairs(plug_list.list) do
+    trigger_event(p, 'PackDeletePre')
+
     vim.fs.rm(p.path, { recursive = true, force = true })
     added_plugins[p.path] = nil
     notify('Removed plugin `' .. p.spec.name .. '`', 'INFO')
-  end
 
-  plug_list:trigger_event('PackDelete')
+    trigger_event(p, 'PackDelete')
+  end
 end
 
 --- @inlinedoc
