@@ -563,18 +563,6 @@ local function checkout(p, timestamp, skip_same_sha)
 end
 
 --- @param plug_list vim.pack.Plug[]
---- @param skip_same_sha boolean
-local function checkout_list(plug_list, skip_same_sha)
-  local timestamp = get_timestamp()
-  --- @async
-  --- @param p vim.pack.Plug
-  local function do_checkout(p)
-    checkout(p, timestamp, skip_same_sha)
-  end
-  run_list(plug_list, do_checkout)
-end
-
---- @param plug_list vim.pack.Plug[]
 local function install_list(plug_list)
   -- Get user confirmation to install plugins
   local sources = {}
@@ -861,7 +849,14 @@ end
 local function feedback_confirm(plug_list)
   -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
   local function finish_update()
-    checkout_list(plug_list, true)
+    local timestamp = get_timestamp()
+    --- @async
+    --- @param p vim.pack.Plug
+    local function do_checkout(p)
+      checkout(p, timestamp, true)
+    end
+    run_list(plug_list, do_checkout)
+
     feedback_log(plug_list)
   end
 
@@ -911,6 +906,9 @@ function M.update(names, opts)
   end
   git_ensure_exec()
 
+  -- Perform update
+  local timestamp = get_timestamp()
+
   --- @async
   --- @param p vim.pack.Plug
   local function do_update(p)
@@ -919,17 +917,16 @@ function M.update(names, opts)
 
     -- Compute change info: changelog if any, new tags if nothing to update
     infer_update_details(p)
+
+    -- Checkout immediately if not need to confirm
+    if opts.force then
+      checkout(p, timestamp, true)
+    end
   end
   run_list(plug_list, do_update, 'Downloading updates')
 
-  -- Perform update
-  if not opts.force then
-    feedback_confirm(plug_list)
-    return
-  end
-
-  checkout_list(plug_list, true)
-  feedback_log(plug_list)
+  local feedback = opts.force and feedback_log or feedback_confirm
+  feedback(plug_list)
 end
 
 --- Remove plugins from disk
