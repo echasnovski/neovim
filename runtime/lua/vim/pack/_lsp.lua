@@ -161,9 +161,8 @@ local cmd = function(disp)
   return res
 end
 
-M.client_id = vim.lsp.start(
-  { cmd = cmd, name = 'vim.pack', root_dir = vim.uv.cwd() },
-  { attach = false }
+M.client_id = assert(
+  vim.lsp.start({ cmd = cmd, name = 'vim.pack', root_dir = vim.uv.cwd() }, { attach = false })
 )
 
 return M
