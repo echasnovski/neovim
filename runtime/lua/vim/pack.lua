@@ -417,22 +417,16 @@ local function run_list(plug_list, f, progress_title)
   report_progress('end', 100, '(%d/%d)', #funs, #funs)
 end
 
---- @param msg string
+--- @param plug_list vim.pack.Plug[]
 --- @return boolean
-local function confirm(msg)
-  -- Work around confirmation message not showing during startup.
-  -- This is a semi-regression of #31525: some redraw during startup makes
-  -- confirmation message disappear.
-  -- TODO: Remove when #34088 is resolved.
-  if vim.v.vim_did_enter == 1 then
-    return vim.fn.confirm(msg, 'Proceed? &Yes\n&No', 1, 'Question') == 1
+local function confirm_install(plug_list)
+  local sources = {} --- @type string[]
+  for _, p in ipairs(plug_list) do
+    sources[#sources + 1] = p.spec.source
   end
-
-  vim.defer_fn(function()
-    vim.print(msg .. '\nProceed? [Y]es, (N)o')
-  end, 100)
-  local ok, char = pcall(vim.fn.getcharstr)
-  local res = (ok and (char == 'y' or char == 'Y' or char == '\r'))
+  local sources_str = table.concat(sources, '\n')
+  local confirm_msg = ('These plugins will be installed:\n\n%s\n'):format(sources_str)
+  local res = vim.fn.confirm(confirm_msg, 'Proceed? &Yes\n&No', 1, 'Question') == 1
   vim.cmd.redraw()
   return res
 end
@@ -539,13 +533,7 @@ end
 --- @param plug_list vim.pack.Plug[]
 local function install_list(plug_list)
   -- Get user confirmation to install plugins
-  local sources = {} --- @type string[]
-  for _, p in ipairs(plug_list) do
-    sources[#sources + 1] = p.spec.source
-  end
-  local sources_str = table.concat(sources, '\n')
-  local confirm_msg = ('These plugins will be installed:\n\n%s\n'):format(sources_str)
-  if not confirm(confirm_msg) then
+  if not confirm_install(plug_list) then
     for _, p in ipairs(plug_list) do
       p.info.err = 'Installation was not confirmed'
     end
