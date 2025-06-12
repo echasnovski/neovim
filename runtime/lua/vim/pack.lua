@@ -605,7 +605,7 @@ local n_added_plugins = 0
 local function pack_add(plug, opts)
   -- Add plugin only once, i.e. no overriding of spec. This allows users to put
   -- plugin first to fully control its spec.
-  if added_plugins[plug.path] ~= nil then
+  if added_plugins[plug.path] then
     return
   end
 
