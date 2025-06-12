@@ -537,20 +537,21 @@ end
 --- No local branches are created, branches from "origin" remote are used directly.
 --- @async
 --- @param p vim.pack.Plug
---- @param timestamp string
---- @param skip_same_sha boolean
-local function checkout(p, timestamp, skip_same_sha)
+--- @param opts { timestamp: string, skip_same_sha: boolean, silent: boolean }
+local function checkout(p, opts)
   infer_states(p)
-  if skip_same_sha and p.info.sha_head == p.info.sha_target then
+  if opts.skip_same_sha and p.info.sha_head == p.info.sha_target then
     return
   end
 
   trigger_event(p, 'PackUpdatePre')
 
-  cli_async(git_cmd('stash', timestamp), p.path)
+  cli_async(git_cmd('stash', opts.timestamp), p.path)
 
   cli_async(git_cmd('checkout', p.info.sha_target), p.path)
-  notify(('Updated state to `%s` in `%s`'):format(p.info.version_str, p.spec.name), 'INFO')
+  if not opts.silent then
+    notify(('Updated state to `%s` in `%s`'):format(p.info.version_str, p.spec.name), 'INFO')
+  end
 
   trigger_event(p, 'PackUpdate')
 
@@ -578,7 +579,7 @@ local function install_list(plug_list)
     return
   end
 
-  local timestamp = get_timestamp()
+  local checkout_opts = { timestamp = get_timestamp(), skip_same_sha = false, silent = true }
   --- @async
   --- @param p vim.pack.Plug
   local function do_install(p)
@@ -588,7 +589,7 @@ local function install_list(plug_list)
 
     -- Do not skip checkout even if HEAD and target have same commit hash to
     -- have new repo in expected detached HEAD state and generated help files.
-    checkout(p, timestamp, false)
+    checkout(p, checkout_opts)
 
     -- 'PackInstall' is triggered after 'PackUpdate' intentionally to have it
     -- indicate "plugin is installed in its correct initial version"
@@ -849,11 +850,11 @@ end
 local function feedback_confirm(plug_list)
   -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
   local function finish_update()
-    local timestamp = get_timestamp()
+    local checkout_opts = { timestamp = get_timestamp(), skip_same_sha = true, silent = false }
     --- @async
     --- @param p vim.pack.Plug
     local function do_checkout(p)
-      checkout(p, timestamp, true)
+      checkout(p, checkout_opts)
     end
     run_list(plug_list, do_checkout)
 
@@ -907,7 +908,7 @@ function M.update(names, opts)
   git_ensure_exec()
 
   -- Perform update
-  local timestamp = get_timestamp()
+  local checkout_opts = { timestamp = get_timestamp(), skip_same_sha = true, level = true }
 
   --- @async
   --- @param p vim.pack.Plug
@@ -920,10 +921,11 @@ function M.update(names, opts)
 
     -- Checkout immediately if not need to confirm
     if opts.force then
-      checkout(p, timestamp, true)
+      checkout(p, checkout_opts)
     end
   end
-  run_list(plug_list, do_update, 'Downloading updates')
+  local progress_title = opts.force and 'Updating' or 'Downloading updates'
+  run_list(plug_list, do_update, progress_title)
 
   local feedback = opts.force and feedback_log or feedback_confirm
   feedback(plug_list)
