@@ -38,6 +38,19 @@ optionally supplied).  A good rule of thumb is that if a method is meant to
 modify the diagnostics for a buffer (e.g. |vim.diagnostic.set()|) then it
 requires a namespace.
 
+==============================================================================
+DEFAULTS                                              *diagnostic-defaults*
+
+These diagnostic keymaps are created unconditionally when Nvim starts:
+- |]d| is mapped in Normal mode to jump the next diagnostic in the current
+  buffer
+- |[d| is mapped in Normal and Visual mode to jump to the previous diagnostic
+  in th current buffer
+- |]D| is mapped in Normal mode to jump to the last diagnostic in the current buffer
+- |[D| is mapped in Normal mode to jump to the first diagnostic in the current
+  buffer
+- <C-w>d is mapped in normal mode to show diagnostic under cursor.
+
                                 *vim.diagnostic.severity* *diagnostic-severity*
 The "severity" key in a diagnostic is one of the values defined in
 `vim.diagnostic.severity`:
@@ -430,27 +443,43 @@ Example: >lua
 Lua module: vim.diagnostic                                    *diagnostic-api*
 
 *vim.Diagnostic*
+    Extends: |vim.Diagnostic.Set|
+
                                                         *diagnostic-structure*
 
     Diagnostics use the same indexing as the rest of the Nvim API (i.e.
     0-based rows and columns). |api-indexing|
 
     Fields: ~
-      • {bufnr}?      (`integer`) Buffer number
-      • {lnum}        (`integer`) The starting line of the diagnostic
-                      (0-indexed)
-      • {end_lnum}?   (`integer`) The final line of the diagnostic (0-indexed)
+      • {bufnr}       (`integer`) Buffer number
+      • {end_lnum}    (`integer`) The final line of the diagnostic (0-indexed)
       • {col}         (`integer`) The starting column of the diagnostic
                       (0-indexed)
-      • {end_col}?    (`integer`) The final column of the diagnostic
+      • {end_col}     (`integer`) The final column of the diagnostic
                       (0-indexed)
-      • {severity}?   (`vim.diagnostic.Severity`) The severity of the
+      • {severity}    (`vim.diagnostic.Severity`) The severity of the
                       diagnostic |vim.diagnostic.severity|
+      • {namespace}?  (`integer`)
+
+*vim.Diagnostic.Set*
+    Diagnostics use the same indexing as the rest of the Nvim API (i.e.
+    0-based rows and columns). |api-indexing|
+
+    Fields: ~
+      • {lnum}        (`integer`) The starting line of the diagnostic
+                      (0-indexed)
+      • {col}?        (`integer`, default: `0`) The starting column of the
+                      diagnostic (0-indexed)
+      • {end_lnum}?   (`integer`, default: `lnum`) The final line of the
+                      diagnostic (0-indexed)
+      • {end_col}?    (`integer`, default: `col`) The final column of the
+                      diagnostic (0-indexed)
+      • {severity}?   (`vim.diagnostic.Severity`, default: `vim.diagnostic.severity.ERROR`)
+                      The severity of the diagnostic |vim.diagnostic.severity|
       • {message}     (`string`) The diagnostic text
       • {source}?     (`string`) The source of the diagnostic
       • {code}?       (`string|integer`) The diagnostic code
       • {user_data}?  (`any`) arbitrary data plugins can add
-      • {namespace}?  (`integer`)
 
 *vim.diagnostic.GetOpts*
     A table with the following keys:
@@ -930,7 +959,7 @@ set({namespace}, {bufnr}, {diagnostics}, {opts})        *vim.diagnostic.set()*
     Parameters: ~
       • {namespace}    (`integer`) The diagnostic namespace
       • {bufnr}        (`integer`) Buffer number
-      • {diagnostics}  (`vim.Diagnostic[]`) See |vim.Diagnostic|.
+      • {diagnostics}  (`vim.Diagnostic.Set[]`) See |vim.Diagnostic.Set|.
       • {opts}         (`vim.diagnostic.Opts?`) Display options to pass to
                        |vim.diagnostic.show()|. See |vim.diagnostic.Opts|.
 

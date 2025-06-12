@@ -329,6 +329,7 @@ end
 --- capabilities.
 --- @return lsp.ClientCapabilities
 function protocol.make_client_capabilities()
+  ---@type lsp.ClientCapabilities
   return {
     general = {
       positionEncodings = {
@@ -340,6 +341,9 @@ function protocol.make_client_capabilities()
     textDocument = {
       diagnostic = {
         dynamicRegistration = false,
+        tagSupport = {
+          valueSet = get_value_set(constants.DiagnosticTag),
+        },
       },
       inlayHint = {
         dynamicRegistration = true,
@@ -565,6 +569,9 @@ function protocol.make_client_capabilities()
       },
       inlayHint = {
         refreshSupport = true,
+      },
+      workspace = {
+        refreshSupport = false,
       },
     },
     experimental = nil,

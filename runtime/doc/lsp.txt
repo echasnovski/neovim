@@ -1069,7 +1069,7 @@ get_client_by_id({client_id})                     *vim.lsp.get_client_by_id()*
       • {client_id}  (`integer`) client id
 
     Return: ~
-        (`vim.lsp.Client?`) client rpc object
+        (`vim.lsp.Client?`) client rpc object. See |vim.lsp.Client|.
 
 get_clients({filter})                                  *vim.lsp.get_clients()*
     Get active clients.
@@ -1279,7 +1279,8 @@ Lua module: vim.lsp.client                                        *lsp-client*
       • {id}                    (`integer`) The id allocated to the client.
       • {initialized}           (`true?`)
       • {name}                  (`string`) See |vim.lsp.ClientConfig|.
-      • {offset_encoding}       (`string`) See |vim.lsp.ClientConfig|.
+      • {offset_encoding}       (`'utf-8'|'utf-16'|'utf-32'`) See
+                                |vim.lsp.ClientConfig|.
       • {progress}              (`vim.lsp.Client.Progress`) A ring buffer
                                 (|vim.ringbuf()|) containing progress messages
                                 sent by the server. See
@@ -1853,6 +1854,18 @@ typehierarchy({kind})                            *vim.lsp.buf.typehierarchy()*
 
     Parameters: ~
       • {kind}  (`"subtypes"|"supertypes"`)
+
+workspace_diagnostics({opts})            *vim.lsp.buf.workspace_diagnostics()*
+    Request workspace-wide diagnostics.
+
+    Parameters: ~
+      • {opts}  (`table?`) A table with the following fields:
+                • {client_id}? (`integer`) Only request diagnostics from the
+                  indicated client. If nil, the request is sent to all
+                  clients.
+
+    See also: ~
+      • https://microsoft.github.io/language-server-protocol/specifications/specification-current/#workspace_dagnostics
 
 workspace_symbol({query}, {opts})             *vim.lsp.buf.workspace_symbol()*
     Lists all symbols in the current workspace in the quickfix window.
@@ -2546,7 +2559,7 @@ make_workspace_params({added}, {removed})
       • {removed}  (`lsp.WorkspaceFolder[]`)
 
     Return: ~
-        (`lsp.WorkspaceFoldersChangeEvent`)
+        (`lsp.DidChangeWorkspaceFoldersParams`)
 
                                         *vim.lsp.util.open_floating_preview()*
 open_floating_preview({contents}, {syntax}, {opts})

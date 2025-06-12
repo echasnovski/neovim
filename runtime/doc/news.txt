@@ -165,12 +165,15 @@ LSP
   non-applicable LSP clients.
 • |vim.lsp.is_enabled()| checks if a LSP config is enabled (without
   "resolving" it).
+• Support for `workspace/diagnostic`: |vim.lsp.buf.workspace_diagnostics()|
+  https://microsoft.github.io/language-server-protocol/specifications/specification-current/#workspace_dagnostics
 
 LUA
 
 • Lua type annotations for `vim.uv`.
 • |vim.hl.range()| now allows multiple timed highlights.
 • |vim.tbl_extend()| and |vim.tbl_deep_extend()| now accept a function behavior argument.
+• |vim.fs.root()| can define "equal priority" via nested lists.
 • Built-in plugin manager |vim.pack|
 
 OPTIONS
@@ -219,10 +222,11 @@ TREESITTER
 
 TUI
 
-• todo
+• |TermResponse| now supports APC query responses.
 
 UI
 
+• |:restart| restarts Nvim and reattaches the current UI.
 • |:checkhealth| shows a summary in the header for every healthcheck.
 • |ui-multigrid| provides composition information and absolute coordinates.
 • `vim._extui` provides an experimental commandline and message UI intended to
@@ -230,7 +234,6 @@ UI
 • Error messages are more concise:
   • "Error detected while processing:" changed to "Error in:".
   • "Error executing Lua:" changed to "Lua:".
-• |:restart| detaches the embedded server from the UI and then restarts it.
 
 VIMSCRIPT
 

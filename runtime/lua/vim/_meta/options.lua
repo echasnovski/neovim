@@ -1184,6 +1184,9 @@ vim.go.cia = vim.go.completeitemalign
 --- 	    completion in the preview window.  Only works in
 --- 	    combination with "menu" or "menuone".
 ---
+--- This option does not apply to `cmdline-completion`. See 'wildoptions'
+--- for that.
+---
 --- @type string
 vim.o.completeopt = "menu,popup"
 vim.o.cot = vim.o.completeopt
@@ -6168,16 +6171,13 @@ vim.o.si = vim.o.smartindent
 vim.bo.smartindent = vim.o.smartindent
 vim.bo.si = vim.bo.smartindent
 
---- When on, a <Tab> in front of a line inserts blanks according to
---- 'shiftwidth'.  'tabstop' or 'softtabstop' is used in other places.  A
---- <BS> will delete a 'shiftwidth' worth of space at the start of the
---- line.
---- When off, a <Tab> always inserts blanks according to 'tabstop' or
---- 'softtabstop'.  'shiftwidth' is only used for shifting text left or
---- right `shift-left-right`.
---- What gets inserted (a <Tab> or spaces) depends on the 'expandtab'
---- option.  Also see `ins-expandtab`.  When 'expandtab' is not set, the
---- number of spaces is minimized by using <Tab>s.
+--- When enabled, the <Tab> key will indent by 'shiftwidth' if the cursor
+--- is in leading whitespace.  The <BS> key has the opposite effect.
+--- In leading whitespace, this has the same effect as setting
+--- 'softtabstop' to the value of 'shiftwidth'.
+--- NOTE: in most cases, using 'softtabstop' is a better option.  Have a
+--- look at section `30.5` of the user guide for detailed
+--- explanations on how Vim works with tabs and spaces.
 ---
 --- @type boolean
 vim.o.smarttab = true
@@ -6967,8 +6967,8 @@ vim.go.tabpagemax = vim.o.tabpagemax
 vim.go.tpm = vim.go.tabpagemax
 
 --- Defines the column multiple used to display the Horizontal Tab
---- character (ASCII 9); a Horizontal Tab always advances to the next
---- tab stop.
+--- character (ASCII 9); a Horizontal Tab always advances to the next tab
+--- stop.
 --- The value must be at least 1 and at most 9999.
 --- If `'vartabstop'` is set, this option is ignored.
 --- Leave it at 8 unless you have a strong reason (see usr `30.5`).
@@ -7927,6 +7927,9 @@ vim.go.wim = vim.go.wildmode
 --- 		is displayed per line.  Often used tag kinds are:
 --- 			d	#define
 --- 			f	function
+---
+--- This option does not apply to `ins-completion`. See 'completeopt' for
+--- that.
 ---
 --- @type string
 vim.o.wildoptions = "pum,tagfile"
