@@ -679,11 +679,16 @@ function M.add(specs, opts)
     end
   end
 
-  -- Delay showing errors to have "good" plugins added first
+  -- Delay showing all errors to have "good" plugins added first
+  local errors = {} --- @type string[]
   for _, p in ipairs(plugs_to_install) do
     if p.info.err ~= '' then
-      error(('Error in `%s` during installation:\n%s'):format(p.spec.name, p.info.err))
+      errors[#errors + 1] = ('`%s`:\n%s'):format(p.spec.name, p.info.err)
     end
+  end
+  if #errors > 0 then
+    local error_str = table.concat(errors, '\n\n')
+    error(('Errors during installation:\n\n%s'):format(error_str))
   end
 end
 
