@@ -629,8 +629,8 @@ local added_plugins = {}
 local n_added_plugins = 0
 
 --- @param plug vim.pack.Plug
---- @param bang boolean
-local function pack_add(plug, bang)
+--- @param opts vim.pack.keyset.add
+local function pack_add(plug, opts)
   -- Add plugin only once, i.e. no overriding of spec. This allows users to put
   -- plugin first to fully control its spec.
   if added_plugins[plug.path] ~= nil then
@@ -640,25 +640,24 @@ local function pack_add(plug, bang)
   n_added_plugins = n_added_plugins + 1
   added_plugins[plug.path] = { plug = plug, id = n_added_plugins }
 
+  if opts.opt then return end
+  local bang = opts.bang
+
   vim.cmd.packadd({ plug.spec.name, bang = bang })
 
   -- Execute 'after/' scripts if not during startup (when they will be sourced
   -- automatically), as `:packadd` only sources plain 'plugin/' files.
   -- See https://github.com/vim/vim/issues/15584
   -- Deliberately do so after executing all currently known 'plugin/' files.
-  local should_load_after_dir = vim.v.vim_did_enter == 1 and not bang and vim.o.loadplugins
-  if should_load_after_dir then
-    local after_paths = vim.fn.glob(plug.path .. '/after/plugin/**/*.{vim,lua}', false, true)
-    --- @param path string
-    vim.tbl_map(function(path)
-      pcall(vim.cmd.source, vim.fn.fnameescape(path))
-    end, after_paths)
+  if vim.v.vim_did_enter == 1 and vim.o.loadplugins then
+    vim.cmd.packadd({ plug.spec.name .. '/after', bang = bang })
   end
 end
 
 --- @class vim.pack.keyset.add
 --- @inlinedoc
 --- @field bang? boolean Whether to execute `:packadd!` instead of |:packadd|. Default `false`.
+--- @field opt? boolean If true, it will only install, and will not execute |:packadd| at all. Default `false`.
 
 --- Add plugin to current session
 ---
@@ -682,7 +681,7 @@ end
 --- @param opts? vim.pack.keyset.add
 function M.add(specs, opts)
   vim.validate('specs', specs, vim.islist, false, 'list')
-  opts = vim.tbl_extend('force', { bang = false }, opts or {})
+  opts = vim.tbl_extend('force', { bang = false, opt = false }, opts or {})
   vim.validate('opts', opts, 'table')
 
   --- @type vim.pack.Plug[]
@@ -707,7 +706,7 @@ function M.add(specs, opts)
   -- Register and `:packadd` those actually on disk
   for _, p in ipairs(plugs) do
     if not failed_install[p.spec.name] then
-      pack_add(p, opts.bang)
+      pack_add(p, opts)
     end
   end
 
