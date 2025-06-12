@@ -525,7 +525,6 @@ local function checkout(p, timestamp, skip_same_sha)
   git_cmd({ 'stash', '--quiet', '--message', msg }, p.path)
 
   git_cmd({ 'checkout', '--quiet', p.info.sha_target }, p.path)
-  notify(('Updated state to `%s` in `%s`'):format(p.info.version_str, p.spec.name), 'INFO')
 
   trigger_event(p, 'PackUpdate')
 
@@ -894,7 +893,8 @@ function M.update(names, opts)
       checkout(p, timestamp, true)
     end
   end
-  run_list(plug_list, do_update, 'Downloading updates')
+  local progress_title = opts.force and 'Updating' or 'Downloading updates'
+  run_list(plug_list, do_update, progress_title)
 
   if opts.force then
     feedback_log(plug_list)
@@ -904,15 +904,25 @@ function M.update(names, opts)
   -- Show report in new buffer in separate tabpage
   local lines = compute_feedback_lines(plug_list, false)
   show_confirm_buf(lines, function()
+    -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
+    --- @param p vim.pack.Plug
+    local plugs_to_checkout = vim.tbl_filter(function(p)
+      return p.info.err == '' and p.info.sha_head ~= p.info.sha_target
+    end, plug_list)
+    if #plugs_to_checkout == 0 then
+      notify('Nothing to update', 'WARN')
+      return
+    end
+
     local timestamp2 = get_timestamp()
     --- @async
     --- @param p vim.pack.Plug
     local function do_checkout(p)
       checkout(p, timestamp2, true)
     end
-    run_list(plug_list, do_checkout, 'Applying updates')
+    run_list(plugs_to_checkout, do_checkout, 'Applying updates')
 
-    feedback_log(plug_list)
+    feedback_log(plugs_to_checkout)
   end)
 end
 
