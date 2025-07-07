@@ -776,7 +776,7 @@ local function feedback_log(plug_list)
 end
 
 --- @param lines string[]
---- @param on_finish fun()
+--- @param on_finish fun(bufnr: integer)
 local function show_confirm_buf(lines, on_finish)
   -- Show buffer in a separate tabpage
   local bufnr = api.nvim_create_buf(true, true)
@@ -794,7 +794,7 @@ local function show_confirm_buf(lines, on_finish)
 
   -- Define action on accepting confirm
   local function finish()
-    on_finish()
+    on_finish(bufnr)
     delete_buffer()
   end
   -- - Use `nested` to allow other events (useful for statuslines)
@@ -822,6 +822,31 @@ local function show_confirm_buf(lines, on_finish)
   vim.lsp.buf_attach_client(bufnr, require('vim.pack._lsp').client_id)
 end
 
+--- Get map of plugin names that need update: all plugin sections present in
+--- confirmation buffer under "# Update" section.
+--- @param bufnr integer
+--- @return table<string,boolean>
+local function get_confirmed_update_plugins(bufnr)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  --- @type table<string,boolean>, boolean
+  local res, is_in_update = {}, false
+  for _, l in ipairs(lines) do
+    local name = l:match('^## (.+)$')
+    if name and is_in_update then
+      res[name] = true
+    end
+
+    local group = l:match('^# (%S+)')
+    if group then
+      is_in_update = group == 'Update'
+      if not is_in_update then
+        break
+      end
+    end
+  end
+  return res
+end
+
 --- @class vim.pack.keyset.update
 --- @inlinedoc
 --- @field force? boolean Whether to skip confirmation and make updates immediately. Default `false`.
@@ -841,6 +866,9 @@ end
 ---         - 'textDocument/hover' (`K` via |lsp-defaults| or |vim.lsp.buf.hover()|) -
 ---           show more information at cursor. Like details of particular pending
 ---           change or newer tag.
+---         - 'textDocument/codeAction' (`gra` via |lsp-defaults| or |vim.lsp.buf.code_action()|) -
+---           show code actions available for "plugin at cursor". Like "delete", "update",
+---           or "skip updating".
 ---
 ---       Execute |:write| to confirm update, execute |:quit| to discard the update.
 ---     - If `true`, make updates right away.
@@ -899,16 +927,17 @@ function M.update(names, opts)
 
   -- Show report in new buffer in separate tabpage
   local lines = compute_feedback_lines(plug_list, false)
-  show_confirm_buf(lines, function()
-    -- TODO(echasnovski): Allow to not update all plugins via LSP code actions
-    --- @param p vim.pack.Plug
-    local plugs_to_checkout = vim.tbl_filter(function(p)
-      return p.info.err == '' and p.info.sha_head ~= p.info.sha_target
-    end, plug_list)
-    if #plugs_to_checkout == 0 then
+  show_confirm_buf(lines, function(bufnr)
+    local to_update = get_confirmed_update_plugins(bufnr)
+    if not next(to_update) then
       notify('Nothing to update', 'WARN')
       return
     end
+
+    --- @param p vim.pack.Plug
+    local plugs_to_checkout = vim.tbl_filter(function(p)
+      return to_update[p.spec.name]
+    end, plug_list)
 
     local timestamp2 = get_timestamp()
     --- @async
