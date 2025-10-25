@@ -334,7 +334,7 @@ end
 local function new_plug(spec, plug_dir)
   local spec_resolved = normalize_spec(spec)
   local path = vim.fs.joinpath(plug_dir or get_plug_dir(), spec_resolved.name)
-  local info = { err = '', installed = uv.fs_stat(path) ~= nil }
+  local info = { err = '', installed = plugin_lock.plugins[spec_resolved.name] ~= nil }
   return { spec = spec_resolved, path = path, info = info }
 end
 
@@ -728,27 +728,131 @@ local function lock_write()
   assert(uv.fs_close(fd))
 end
 
-local function lock_read()
+--- @param name string
+--- @return boolean, boolean
+local function lock_repair(name, plug_dir)
+  local data = plugin_lock.plugins[name]
+  data = type(data) == 'table' and data or {}
+  local did_repair, was_bad_version = false, false
+  local path = vim.fs.joinpath(plug_dir, name)
+
+  -- Repair selectively to preserve non-repairable data (like `version`)
+  --- @async
+  local function f()
+    local new_src = git_cmd({ 'remote', 'get-url', 'origin' }, path)
+    did_repair = did_repair or (data.src ~= new_src)
+    data.src = new_src
+
+    -- Do not repair not properly installed plugins (i.e. no checkout) in
+    -- favor of a repetitive informative warning
+    if data.rev == nil and vim.deep_equal(vim.fn.readdir(path), { '.git' }) then
+      was_bad_version = true
+    else
+      local new_rev = git_get_hash('HEAD', path)
+      did_repair = did_repair or (data.rev ~= new_rev)
+      data.rev = new_rev
+    end
+  end
+  async.run(f):wait()
+
+  plugin_lock.plugins[name] = data
+  return did_repair, was_bad_version
+end
+
+--- Sync lockfile data with installed plugins:
+--- - Install plugins that have valid lock data but not on disk.
+--- - Repair bad lock data for installed plugins (with warning).
+--- - Remove bad lock data for not installed plugins (With warning).
+--- - Write lockfile on disk if it has changed.
+local function lock_sync(confirm)
+  -- Compute installed plugins
+  -- NOTE: This is done on every startup, but it is very fast. Single `vim.fs.dir()`
+  -- also scales better than multiple on-demand `uv.fs_stat()` checks.
+  local plug_dir = get_plug_dir()
+  local installed = {} --- @type table<string,boolean>
+  for name, _ in vim.fs.dir(plug_dir) do
+    installed[name] = true
+    plugin_lock.plugins[name] = plugin_lock.plugins[name] or {}
+  end
+
+  -- Traverse once optimizing for "regular startup" (no repair, no install)
+  local to_install = {} --- @type vim.pack.Plug[]
+  local to_repair = {} --- @type string[]
+  local to_remove = {} --- @type string[]
+  local needs_write = false
+  for name, data in pairs(plugin_lock.plugins) do
+    local is_bad = type(data) ~= 'table' or type(data.rev) ~= 'string' or type(data.src) ~= 'string'
+    if is_bad then
+      needs_write = true
+      local t = installed[name] and to_repair or to_remove
+      t[#t + 1] = name
+    elseif not installed[name] then
+      to_install[#to_install + 1] = new_plug({ src = data.src, name = name }, plug_dir)
+    end
+
+    -- Deserialize `version`
+    local version = data.version
+    if type(version) == 'string' then
+      data.version = version:match("^'(.+)'$") or vim.version.range(version)
+    end
+  end
+
+  -- Perform actions if needed
+  if #to_repair > 0 then
+    local warn_repair, warn_bad_version = {}, {} --- @type string[], string[]
+
+    for _, name in ipairs(to_repair) do
+      local did_repair, was_bad_version = lock_repair(name, plug_dir)
+      warn_repair[#warn_repair + 1] = did_repair and name or nil
+      warn_bad_version[#warn_bad_version + 1] = was_bad_version and name or nil
+    end
+
+    if #warn_repair > 0 then
+      table.sort(warn_repair)
+      notify('Repaired lockfile for plugins: ' .. table.concat(warn_repair, ', '), 'WARN')
+    end
+    if #warn_bad_version > 0 then
+      local msg = 'These plugins did not fully install due to bad `version` '
+        .. '(use proper value in `vim.pack.add()` and run `vim.pack.update()`): '
+        .. table.concat(warn_bad_version, ', ')
+      notify(msg, 'WARN')
+    end
+  end
+
+  if #to_remove > 0 then
+    for _, name in ipairs(to_remove) do
+      plugin_lock.plugins[name] = nil
+    end
+    table.sort(to_remove)
+    notify('Removed bad lockfile data for plugins: ' .. table.concat(to_remove, ', '), 'WARN')
+  end
+
+  if #to_install > 0 then
+    install_list(to_install, confirm)
+  end
+
+  if needs_write then
+    lock_write()
+  end
+end
+
+local function lock_read(confirm)
   if plugin_lock then
     return
   end
-  local fd = uv.fs_open(lock_get_path(), 'r', 438)
-  if not fd then
-    plugin_lock = { plugins = {} }
-    return
-  end
-  local stat = assert(uv.fs_fstat(fd))
-  local data = assert(uv.fs_read(fd, stat.size, 0))
-  assert(uv.fs_close(fd))
-  plugin_lock = vim.json.decode(data) --- @type vim.pack.Lock
+  confirm = vim.F.if_nil(confirm, true)
 
-  -- Deserialize `version`
-  for _, l_data in pairs(plugin_lock.plugins) do
-    local version = l_data.version
-    if type(version) == 'string' then
-      l_data.version = version:match("^'(.+)'$") or vim.version.range(version)
-    end
+  local fd = uv.fs_open(lock_get_path(), 'r', 438)
+  if fd then
+    local stat = assert(uv.fs_fstat(fd))
+    local data = assert(uv.fs_read(fd, stat.size, 0))
+    assert(uv.fs_close(fd))
+    plugin_lock = vim.json.decode(data) --- @type vim.pack.Lock
+  else
+    plugin_lock = { plugins = {} }
   end
+
+  lock_sync(confirm)
 end
 
 --- @class vim.pack.keyset.add
@@ -786,6 +890,8 @@ function M.add(specs, opts)
   opts = vim.tbl_extend('force', { load = vim.v.vim_did_enter == 1, confirm = true }, opts or {})
   vim.validate('opts', opts, 'table')
 
+  lock_read(opts.confirm)
+
   local plug_dir = get_plug_dir()
   local plugs = {} --- @type vim.pack.Plug[]
   for i = 1, #specs do
@@ -794,7 +900,6 @@ function M.add(specs, opts)
   plugs = normalize_plugs(plugs)
 
   -- Pre-process
-  lock_read()
   local plugs_to_install = {} --- @type vim.pack.Plug[]
   local needs_lock_write = false
   for _, p in ipairs(plugs) do

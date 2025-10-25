@@ -323,6 +323,7 @@ local function get_lock_path()
   return vim.fs.joinpath(fn.stdpath('config'), 'nvim-pack-lock.json')
 end
 
+--- @return {plugins:table<string,{rev:string, src:string, version?:string}>}
 local function get_lock_tbl()
   return vim.json.decode(fn.readblob(get_lock_path()))
 end
@@ -580,6 +581,92 @@ describe('vim.pack', function()
         },
       }
       eq(ref_lockfile, get_lock_tbl())
+
+      -- Should warn about not complete installation in new session
+      n.clear()
+      exec_lua(function()
+        vim.pack.add({})
+      end)
+      local ref_messages = 'vim.pack: These plugins did not fully install due to bad `version`'
+        .. ' (use proper value in `vim.pack.add()` and run `vim.pack.update()`): basic'
+      eq(ref_messages, n.exec_capture('messages'))
+    end)
+
+    it('repairs lockfile', function()
+      pcall_err(exec_lua, function()
+        vim.pack.add({
+          { src = repos_src.basic, name = 'other', version = 'feat-branch' },
+          { src = repos_src.defbranch, version = 'not-exist' },
+          repos_src.plugindirs,
+        })
+      end)
+      local lock_path = get_lock_path()
+      eq(true, vim.uv.fs_stat(lock_path) ~= nil)
+
+      local basic_rev = git_get_hash('feat-branch', 'basic')
+      local plugindirs_rev = git_get_hash('main', 'plugindirs')
+
+      -- Should try its best to regenerate lockfile without extra info
+      fn.delete(get_lock_path())
+      n.clear()
+      exec_lua(function()
+        vim.pack.add({})
+      end)
+      local ref_lockfile = {
+        plugins = {
+          -- No `version = 'feat-branch'` as there is no way to get that info
+          -- (lockfile was the only source of that on disk)
+          other = { rev = basic_rev, src = repos_src.basic },
+          defbranch = { src = repos_src.defbranch },
+          plugindirs = { rev = plugindirs_rev, src = repos_src.plugindirs },
+        },
+      }
+      eq(ref_lockfile, get_lock_tbl())
+
+      local ref_messages = {
+        'vim.pack: Repaired lockfile for plugins: defbranch, other, plugindirs',
+        'vim.pack: These plugins did not fully install due to bad `version`'
+          .. ' (use proper value in `vim.pack.add()` and run `vim.pack.update()`): defbranch',
+      }
+      eq(table.concat(ref_messages, '\n'), n.exec_capture('messages'))
+
+      -- Calling `add()` with proper `version` should still update lockfile
+      exec_lua(function()
+        vim.pack.add({
+          { src = repos_src.basic, name = 'other', version = 'feat-branch' },
+          { src = repos_src.defbranch, version = 'dev' },
+        })
+      end)
+      local lock_plugins = get_lock_tbl().plugins
+      eq("'feat-branch'", lock_plugins.other.version)
+      eq("'dev'", lock_plugins.defbranch.version)
+    end)
+
+    it('removes bad unrepairable data', function()
+      exec_lua(function()
+        vim.pack.add({ repos_src.basic, repos_src.defbranch })
+      end)
+
+      -- Corrupt lockfile by removing some data
+      local lock_tbl = get_lock_tbl()
+      lock_tbl.plugins.basic.rev = nil
+      ---@diagnostic disable-next-line: assign-type-mismatch
+      lock_tbl.plugins.defbranch.src = 1
+      local lockfile_text = vim.json.encode(lock_tbl, { indent = '  ', sort_keys = true })
+      fn.writefile(vim.split(lockfile_text, '\n'), get_lock_path())
+
+      -- Remove plugins from disk, so that there is no info for repair
+      fn.delete(pack_get_dir(), 'rf')
+
+      n.clear()
+      exec_lua(function()
+        vim.pack.add({})
+      end)
+
+      eq({ plugins = {} }, get_lock_tbl())
+
+      local ref_messages = 'vim.pack: Removed bad lockfile data for plugins: basic, defbranch'
+      eq(ref_messages, n.exec_capture('messages'))
     end)
 
     it('installs at proper version', function()
@@ -1570,6 +1657,10 @@ describe('vim.pack', function()
       eq(ref_environ, fn.environ())
     end)
 
+    it('works with bad/absent lockfile', function()
+      -- TODO
+    end)
+
     it('validates input', function()
       local function assert(err_pat, input)
         local function update_input()
@@ -1719,6 +1810,10 @@ describe('vim.pack', function()
       local basic_data = make_basic_data(true, true)
       eq({ { defbranch_data, basic_data }, { basic_data } }, exec_lua('return _G.get_log'))
     end)
+
+    it('works with bad/absent lockfile', function()
+      -- TODO
+    end)
   end)
 
   describe('del()', function()
@@ -1772,6 +1867,10 @@ describe('vim.pack', function()
       end)
       eq(false, pack_exists('basic'))
       eq({ plugins = {} }, get_lock_tbl())
+    end)
+
+    it('works with bad/absent lockfile', function()
+      -- TODO
     end)
 
     it('validates input', function()
