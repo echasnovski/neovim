@@ -357,7 +357,8 @@ add({specs}, {opts})                                          *vim.pack.add()*
       • If exists, do nothing in this step.
       • If doesn't exist, install it by downloading from `src` into `name`
         subdirectory (via `git clone`) and update state to match `version`
-        (via `git checkout`).
+        (via `git checkout`). Plugin will not be on disk if any step resulted
+        in an error.
     • For each plugin execute |:packadd| (or customizable `load` function)
       making it reachable by Nvim.
 

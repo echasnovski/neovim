@@ -650,7 +650,6 @@ local function install_list(plug_list, confirm)
     trigger_event(p, 'PackChangedPre', 'install')
 
     git_clone(p.spec.src, p.path)
-    p.info.installed = true
 
     plugin_lock.plugins[p.spec.name].src = p.spec.src
 
@@ -658,6 +657,7 @@ local function install_list(plug_list, confirm)
     p.info.sha_target = (plugin_lock.plugins[p.spec.name] or {}).rev
 
     checkout(p, timestamp)
+    p.info.installed = true
 
     trigger_event(p, 'PackChanged', 'install')
   end
@@ -667,10 +667,11 @@ local function install_list(plug_list, confirm)
     run_list(plug_list, do_install, 'Installing plugins')
   end
 
-  -- Ensure that not installed plugins are absent in lockfile
+  -- Ensure that not fully installed plugins are absent on disk and in lockfile
   for _, p in ipairs(plug_list) do
     if not p.info.installed then
       plugin_lock.plugins[p.spec.name] = nil
+      vim.fs.rm(p.path, { recursive = true, force = true })
     end
   end
 end
@@ -767,7 +768,9 @@ end
 --- - For each specification check that plugin exists on disk in |vim.pack-directory|:
 ---     - If exists, do nothing in this step.
 ---     - If doesn't exist, install it by downloading from `src` into `name`
----       subdirectory (via `git clone`) and update state to match `version` (via `git checkout`).
+---       subdirectory (via `git clone`) and update state to match `version`
+---       (via `git checkout`). Plugin will not be on disk if any step resulted
+---       in an error.
 --- - For each plugin execute |:packadd| (or customizable `load` function) making
 ---   it reachable by Nvim.
 ---
