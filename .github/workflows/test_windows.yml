@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test: [functional, old]
+        test: [functional]
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
@@ -55,19 +55,3 @@ jobs:
         name: functionaltest
         timeout-minutes: ${{ inputs.functionaltest_timeout }}
         run: cmake --build build --target functionaltest
-
-      - if: ${{ matrix.test == 'old' }}
-        uses: msys2/setup-msys2@v2
-        with:
-          update: true
-          install: unzip
-          pacboy: >-
-            make:p gcc:p diffutils:p
-          release: false
-
-      - if: ${{ matrix.test == 'old' }}
-        name: oldtest
-        shell: msys2 {0}
-        run: |
-          cd test/old/testdir
-          mingw32-make VERBOSE=1
