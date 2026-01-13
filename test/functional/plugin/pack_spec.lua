@@ -885,7 +885,12 @@ describe('vim.pack', function()
       local function assert_works()
         -- Should auto-install but wait before executing code after it
         n.clear({ args_rm = { '-u' } })
-        vim.uv.sleep(2000)
+        for _ = 1, 50 do
+          vim.uv.sleep(50)
+          if exec_lua('return _G.done') == true then
+            break
+          end
+        end
         eq(true, exec_lua('return _G.done'))
         assert_loaded()
 
