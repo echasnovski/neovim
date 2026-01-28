@@ -1268,19 +1268,23 @@ vim.cmd({command})                                                 *vim.cmd()*
     See also: ~
       • |ex-cmd-index|
 
-vim.defer_fn({fn}, {timeout})                                 *vim.defer_fn()*
-    Defers calling {fn} until {timeout} ms passes.
+vim.defer_fn({fn}, {when})                                    *vim.defer_fn()*
+    Defers calling {fn} once until {when} condition.
 
-    Use to do a one-shot timer that calls {fn} Note: The {fn} is
-    |vim.schedule_wrap()|ped automatically, so API functions are safe to call.
+    Condition can be:
+    • Integer. Treated as a number of milliseconds to wait until before
+      calling {fn}. Note: The {fn} is |vim.schedule_wrap()|ped automatically,
+      so API functions are safe to call.
+    • String starting with `"event:"`. {fn} will be called exactly once when
+      first matching event triggers. TODO
 
     Parameters: ~
-      • {fn}       (`function`) Callback to call once `timeout` expires
-      • {timeout}  (`integer`) Number of milliseconds to wait before calling
-                   `fn`
+      • {fn}    (`function`) Callback to call
+      • {when}  (`integer|string`) Condition describing when to execute {fn}
 
     Return: ~
-        (`table`) timer luv timer object
+        (`any`) If {when} is integer - |luv-timer-handle|. If {when} describes
+        event - autocommand id (number).
 
                                                              *vim.deprecate()*
 vim.deprecate({name}, {alternative}, {version}, {plugin}, {backtrace})
