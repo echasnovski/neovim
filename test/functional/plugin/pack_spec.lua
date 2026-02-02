@@ -1093,6 +1093,13 @@ describe('vim.pack', function()
       eq(ref_environ, fn.environ())
     end)
 
+    it('loads unmanaged plugins', function()
+      -- TODO: Should properly add to 'rtp'
+      -- TODO: Should work with paths like `~/path/to/dir`, `$HOME/path/to/dir`
+      -- TODO: If there are regular and unmanaged plugins with the same name,
+      -- should prefer unmanaged if loading unmanaged.
+    end)
+
     it('validates input', function()
       local function assert(err_pat, input)
         local function add_input()
@@ -1651,6 +1658,10 @@ describe('vim.pack', function()
         n.exec('llast')
         eq(21, api.nvim_win_get_cursor(0)[1])
       end)
+
+      it('lists unmanaged plugins', function()
+        -- TODO
+      end)
     end)
 
     it('works with not active plugins', function()
@@ -2073,6 +2084,10 @@ describe('vim.pack', function()
       eq(2, exec_lua('return #vim.pack.get()'))
       eq(2, vim.tbl_count(get_lock_tbl().plugins))
     end)
+
+    it('does not list unmanged plugins',function()
+      -- TODO
+    end)
   end)
 
   describe('del()', function()
@@ -2173,6 +2188,10 @@ describe('vim.pack', function()
       exec_lua('vim.pack.del({ "basic" })')
       eq(1, exec_lua('return #vim.pack.get()'))
       eq({ 'plugindirs' }, vim.tbl_keys(get_lock_tbl().plugins))
+    end)
+
+    it('does not delete unmanged plugins',function()
+      -- TODO
     end)
 
     it('validates input', function()
