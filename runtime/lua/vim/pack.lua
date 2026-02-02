@@ -355,6 +355,7 @@ end
 --- @class vim.pack.Spec
 ---
 --- URI from which to install and pull updates. Any format supported by `git clone` is allowed.
+--- If not URI, the plugin will be loaded but not managed.
 --- @field src string
 ---
 --- Name of plugin. Will be used as directory name. Default: `src` repository name.
@@ -388,6 +389,7 @@ end
 --- @field err string The latest error when working on plugin. If non-empty,
 ---   all further actions should not be done (including triggering events).
 --- @field installed? boolean Whether plugin was successfully installed.
+--- @field managed? boolean Whether plugin should be managed.
 --- @field version_str? string `spec.version` with resolved version range.
 --- @field version_ref? string Resolved version as Git reference (if different
 ---   from `version_str`).
@@ -406,8 +408,11 @@ end
 --- @return vim.pack.Plug
 local function new_plug(spec, plug_dir)
   local spec_resolved = normalize_spec(spec)
-  local path = vim.fs.joinpath(plug_dir or get_plug_dir(), spec_resolved.name)
-  local info = { err = '', installed = plugin_lock.plugins[spec_resolved.name] ~= nil }
+  local managed = spec_resolved.src:find('^%w+://') or spec_resolved.src:find('^%w+@')
+  local path = managed and vim.fs.joinpath(plug_dir or get_plug_dir(), spec_resolved.name)
+    or vim.fs.abspath(vim.fs.normalize(spec_resolved.src))
+  local installed = plugin_lock.plugins[spec_resolved.name] ~= nil or not managed
+  local info = { err = '', installed = installed, managed = managed }
   return { spec = spec_resolved, path = path, info = info }
 end
 
@@ -470,6 +475,10 @@ end
 --- @type table<string, { plug: vim.pack.Plug, id: integer }?>
 local active_plugins = {}
 local n_active_plugins = 0
+
+--- Map showing which unmanaged plugins were loaded
+--- @type table<string, boolean>
+local unmanaged_plugins = {}
 
 --- @param p vim.pack.Plug
 --- @param event_name 'PackChangedPre'|'PackChanged'
@@ -771,20 +780,41 @@ end
 local function pack_add(plug, load)
   -- Add plugin only once, i.e. no overriding of spec. This allows users to put
   -- plugin first to fully control its spec.
-  if active_plugins[plug.path] then
+  if active_plugins[plug.path] or unmanaged_plugins[plug.path] then
     return
   end
 
-  n_active_plugins = n_active_plugins + 1
-  active_plugins[plug.path] = { plug = plug, id = n_active_plugins }
+  if plug.info.managed then
+    n_active_plugins = n_active_plugins + 1
+    active_plugins[plug.path] = { plug = plug, id = n_active_plugins }
+  else
+    unmanaged_plugins[plug.path] = true
+  end
 
   if vim.is_callable(load) then
     load({ spec = vim.deepcopy(plug.spec), path = plug.path })
     return
   end
 
+  local packpath_cache = vim.o.packpath
+  local tmp_pack, tmp_plug_path = '', ''
+  if not plug.info.managed then
+    tmp_pack = vim.fs.joinpath(uv.os_tmpdir(), uv.fs_mkdtemp('unmanaged_XXXXXX'))
+    vim.o.packpath = tmp_pack
+    local tmp_pack_opt = vim.fs.joinpath(tmp_pack, 'pack', 'unmanaged', 'opt')
+    vim.fn.mkdir(tmp_pack_opt, 'p')
+    tmp_plug_path = vim.fs.abspath(vim.fs.joinpath(tmp_pack_opt, plug.spec.name))
+    uv.fs_symlink(plug.path, tmp_plug_path, { dir = true, junction = vim.fn.has('win32') == 1 })
+  end
+
   -- NOTE: The `:packadd` specifically seems to not handle spaces in dir name
   vim.cmd.packadd({ vim.fn.escape(plug.spec.name, ' '), bang = not load, magic = { file = false } })
+
+  if not plug.info.managed then
+    vim.o.packpath = packpath_cache
+    vim.o.runtimepath = vim.o.runtimepath:gsub(vim.pesc(tmp_plug_path), plug.path)
+    vim.fs.rm(tmp_pack, { recursive = true, force = true })
+  end
 
   -- The `:packadd` only sources plain 'plugin/' files. Execute 'after/' scripts
   -- if not during startup (when they will be sourced later, even if
@@ -1092,6 +1122,8 @@ local function compute_feedback_lines(plug_list, skip_same_sha)
   if not skip_same_sha then
     append_report('# Same', report_same)
   end
+  -- TODO
+  -- append_report('# Unmanaged', report_unmanaged)
 
   return vim.split(table.concat(lines, '\n\n'), '\n')
 end
