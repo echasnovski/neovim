@@ -156,6 +156,7 @@ LSP
 
 LUA
 
+• |vim.keymap.set()| has a `force` option.
 • |vim.net.request()| can specify custom headers by passing `opts.headers`.
 • |vim.filetype.inspect()| returns a copy of the internal tables used for
   filetype detection.

@@ -1,5 +1,15 @@
 local keymap = {}
 
+local has_mapping = function(mode, lhs, buf)
+  local all = buf == nil and vim.api.nvim_get_keymap(mode) or vim.api.nvim_buf_get_keymap(buf, mode)
+  for _, map in ipairs(all) do
+    if map.lhs == lhs then
+      return true
+    end
+  end
+  return false
+end
+
 --- Table of |:map-arguments|.
 --- Same as |nvim_set_keymap()| {opts}, except:
 --- - {replace_keycodes} defaults to `true` if "expr" is `true`.
@@ -15,6 +25,10 @@ local keymap = {}
 --- Make the mapping recursive. Inverse of {noremap}.
 --- (Default: `false`)
 --- @field remap? boolean
+---
+--- Override already present mapping if `true`, preserve it if `false`.
+--- (Default: `true`)
+--- @field force? boolean
 
 --- Defines a |mapping| of |keycodes| to a function or keycodes.
 ---
@@ -78,6 +92,9 @@ function keymap.set(modes, lhs, rhs, opts)
     opts.remap = nil ---@type boolean?
   end
 
+  local force = vim.F.if_nil(opts.force, true)
+  opts.force = nil
+
   if type(rhs) == 'function' then
     opts.callback = rhs
     rhs = ''
@@ -95,11 +112,15 @@ function keymap.set(modes, lhs, rhs, opts)
 
   if buf then
     for _, m in ipairs(modes) do
-      vim.api.nvim_buf_set_keymap(buf, m, lhs, rhs, opts)
+      if force or not has_mapping(m, lhs, buf) then
+        vim.api.nvim_buf_set_keymap(buf, m, lhs, rhs, opts)
+      end
     end
   else
     for _, m in ipairs(modes) do
-      vim.api.nvim_set_keymap(m, lhs, rhs, opts)
+      if force or not has_mapping(m, lhs) then
+        vim.api.nvim_set_keymap(m, lhs, rhs, opts)
+      end
     end
   end
 end
