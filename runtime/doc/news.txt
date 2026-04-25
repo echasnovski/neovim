@@ -156,6 +156,7 @@ LSP
 
 LUA
 
+• |vim.defer_fn()| allows more execution conditions.
 • |vim.net.request()| can specify custom headers by passing `opts.headers`.
 • |vim.filetype.inspect()| returns a copy of the internal tables used for
   filetype detection.
