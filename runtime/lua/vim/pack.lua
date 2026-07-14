@@ -232,6 +232,22 @@
 ----- To act on install from lockfile, run before very first `vim.pack.add()`
 ---vim.api.nvim_create_autocmd('PackChanged', { callback = hooks })
 ---```
+---[vim.pack-manifest]()
+---
+---Plugins can come with a special top level `pkg.json` manifest file with extra
+---information. If present, `vim.pack` uses it for improved user experience.
+---
+---Full specification see at https://packspec.org/. A simple example:
+---```json
+---{
+---  "name" : "best-plugin.nvim",
+---  "description" : "The best plugin for Neovim",
+---  "engines": {
+---      "nvim": ">=0.13.0",
+---      "vim": ">=9.1.0"
+---  }
+---}
+---```
 
 local api = vim.api
 local uv = vim.uv
@@ -515,6 +531,26 @@ end
 --- @type table<string, { plug: vim.pack.Plug, id: integer }?>
 local active_plugins = {}
 local n_active_plugins = 0
+
+--- @param path string
+--- @return table?
+local function manifest_read(path)
+  local manifest_path = vim.fs.joinpath(path, 'pkg.json')
+  local stat = uv.fs_stat(manifest_path)
+  if not stat then
+    return nil
+  end
+
+  local fd = uv.fs_open(manifest_path, 'r', 438)
+  if not fd then
+    return {}
+  end
+
+  local data = assert(uv.fs_read(fd, stat.size, 0))
+  assert(uv.fs_close(fd))
+  local ok, res = pcall(vim.json.decode, data)
+  return (ok and type(res) == 'table') and res or {}
+end
 
 --- @param plugs vim.pack.Plug[]
 --- @param event_name 'PackChangedPre'|'PackChanged'
@@ -1469,6 +1505,8 @@ end
 --- @class vim.pack.PlugData
 --- @field active boolean Whether plugin was added via |vim.pack.add()| to current session.
 --- @field branches? string[] Available Git branches (first is default). Missing if `info=false`.
+--- Data from the |vim.pack-manifest|. Empty in case of reading error, Missing if `info=false`.
+--- @field manifest? table
 --- @field path string Plugin's path on disk.
 --- @field rev string Current Git revision. Taken from |vim.pack-lockfile| if `info=false`.
 --- Git revision of a pending update. The same as used during |vim.pack.update()| and which
@@ -1495,6 +1533,7 @@ local function add_p_data_info(p_data_list, offline)
     funs[i] = function()
       p_data.branches = git_get_branches(path)
       p_data.tags = git_get_tags(path)
+      p_data.manifest = manifest_read(path)
 
       if not offline then
         git_fetch(path)
