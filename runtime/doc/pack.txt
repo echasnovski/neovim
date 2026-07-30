@@ -426,7 +426,12 @@ These events can be used to execute plugin hooks. For example: >lua
                                                            *vim.pack-manifest*
 
 Plugins can come with a special top level `pkg.json` manifest file with extra
-information. If present, `vim.pack` uses it for improved user experience.
+information. If present, `vim.pack` uses it for improved user experience:
+• Scripts are sourced after triggering corresponding |vim.pack-events|. This
+  allows plugins do define hooks that will be executed during plugin's
+  lifetime. The |current-directory| is temporarily set to plugin's root.
+  Plugin's path is temporarily ensured to be inside |'runtimepath'| (so script
+  can use |require()| with plugin's module).
 
 Full specification see at https://packspec.org/. See also |vim.pack.Manifest|.
 A simple example: >json
@@ -436,6 +441,12 @@ A simple example: >json
      "engines": {
          "nvim": ">=0.13.0",
          "vim": ">=9.1.0"
+     },
+     "scripts": {
+       "install": "scripts/install.lua",
+       "preupdate": "scripts/preupdate.vim",
+       "update": "scripts/update.vim",
+       "preuninstall": "scripts/preuninstall.lua"
      }
     }
 <
@@ -449,6 +460,13 @@ A simple example: >json
                         versions. Values should be |vim.version.range()|
                         compatible specs.
       • {name}?         (`string`) Plugin name
+      • {scripts}?      (`table`) Script locations (relative to plugin's root)
+                        to |:source| after triggering corresponding
+                        |vim.pack-events|.
+                        • {install}? (`string`) Post install script.
+                        • {preuninstall}? (`string`) Pre delete script.
+                        • {preupdate}? (`string`) Pre update script.
+                        • {update}? (`string`) Post update script.
 
 *vim.pack.Spec*
 

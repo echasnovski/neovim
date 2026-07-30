@@ -235,7 +235,12 @@
 ---[vim.pack-manifest]()
 ---
 ---Plugins can come with a special top level `pkg.json` manifest file with extra
----information. If present, `vim.pack` uses it for improved user experience.
+---information. If present, `vim.pack` uses it for improved user experience:
+---- Scripts are sourced after triggering corresponding |vim.pack-events|.
+---  This allows plugins do define hooks that will be executed during plugin's lifetime.
+---  The |current-directory| is temporarily set to plugin's root.
+---  Plugin's path is temporarily ensured to be inside |'runtimepath'| (so script can
+---  use |require()| with plugin's module).
 ---
 ---Full specification see at https://packspec.org/. See also |vim.pack.Manifest|.
 ---A simple example:
@@ -246,6 +251,12 @@
 ---  "engines": {
 ---      "nvim": ">=0.13.0",
 ---      "vim": ">=9.1.0"
+---  },
+---  "scripts": {
+---    "install": "scripts/install.lua",
+---    "preupdate": "scripts/preupdate.vim",
+---    "update": "scripts/update.vim",
+---    "preuninstall": "scripts/preuninstall.lua"
 ---  }
 ---}
 ---```
@@ -533,11 +544,21 @@ end
 local active_plugins = {}
 local n_active_plugins = 0
 
+--- @class vim.pack.ManifestScripts
+--- @inlinedoc
+--- @field install? string Post install script.
+--- @field preupdate? string Pre update script.
+--- @field update? string Post update script.
+--- @field preuninstall? string Pre delete script.
+
 --- @class vim.pack.Manifest
 --- @field name? string Plugin name
 --- @field description? string Plugin description
 --- Supported engine versions. Values should be |vim.version.range()| compatible specs.
 --- @field engines? { nvim: string?, vim: string? }
+--- Script locations (relative to plugin's root) to |:source| after triggering
+--- corresponding |vim.pack-events|.
+--- @field scripts? vim.pack.ManifestScripts
 
 --- @param path string
 --- @return vim.pack.Manifest?
@@ -559,14 +580,43 @@ local function manifest_read(path)
   return (ok and type(res) == 'table') and res or {}
 end
 
+--- @param p vim.pack.Plug
+--- @param name string
+local function source_manifest_script(p, name)
+  local manifest = manifest_read(p.path)
+  if not (type(manifest) == 'table' and (manifest.scripts or {})[name]) then
+    return
+  end
+
+  local script_path = vim.fs.joinpath(p.path, (manifest.scripts or {})[name])
+  vim._with({ cwd = p.path, o = { runtimepath = vim.o.runtimepath } }, function()
+    vim.cmd.packadd({ p.spec.name, bang = true })
+    ---@diagnostic disable-next-line: no-unknown
+    local ok, err = pcall(vim.cmd.source, { script_path, magic = { file = false, bar = false } })
+    if not ok then
+      notify(err, 'WARN')
+    end
+  end)
+end
+
+local manifest_script_name_map = {
+  PackChangedPre = { update = 'preupdate', delete = 'preuninstall' },
+  PackChanged = { install = 'install', update = 'update' },
+}
+
 --- @param plugs vim.pack.Plug[]
 --- @param event_name 'PackChangedPre'|'PackChanged'
 --- @param kind 'install'|'update'|'delete'
 local function trigger_events(plugs, event_name, kind)
+  local manifest_script_name = manifest_script_name_map[event_name][kind]
   for _, p in ipairs(plugs) do
     local active = active_plugins[p.path] ~= nil
     local data = { active = active, kind = kind, spec = vim.deepcopy(p.spec), path = p.path }
     api.nvim_exec_autocmds(event_name, { pattern = p.path, data = data })
+
+    if manifest_script_name then
+      source_manifest_script(p, manifest_script_name)
+    end
   end
 end
 
